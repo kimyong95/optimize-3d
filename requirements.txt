@@ -1,0 +1,9 @@
+# install this in additional to TRELLIS to run this optimization code
+gpytorch
+httpx
+accelerate
+ml-collections
+absl-py
+wandb
+open3d
+trimesh[easy]

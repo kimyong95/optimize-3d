@@ -1,0 +1,37 @@
+services:
+  domino:
+    image: nvcr.io/nim/nvidia/domino-automotive-aero:2.0.0
+    restart: unless-stopped
+    runtime: nvidia
+    shm_size: '8g'
+    ports:
+      - "8000:8000"
+    tty: true
+    environment:
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES}
+      NGC_API_KEY: ${NGC_API_KEY}
+    volumes:
+      - ./assets:/healthcheck_assets
+    labels:
+      autoheal-app: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -s -X POST -F 'design_stl=@/healthcheck_assets/sample.stl' -F 'stream_velocity=30.0' -F 'stencil_size=1' -F 'point_cloud_size=300' http://localhost:8000/v1/infer > /dev/null"]
+      interval: 1m
+      timeout: 10s
+      start_period: 5m
+  autoheal:
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal-app
+    image: willfarrell/autoheal:latest
+    network_mode: none
+    restart: always
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock
