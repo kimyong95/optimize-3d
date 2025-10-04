@@ -413,15 +413,13 @@ class Optimize3DTrainer:
                 "intermediate_noise": slat_noise[:, i:i + 1, :],
             }
 
-            outputs, slat = self.pipeline.run(
-                self.prompt,
-                sparse_structure_sampler_params=sparse_structure_sampler_params,
-                slat_sampler_params=slat_sampler_params,
-                formats=["mesh"],
-            )
-
+            cond = self.pipeline.get_cond([self.prompt])
+            coords = self.pipeline.sample_sparse_structure(cond, 1, sparse_structure_sampler_params)
+            slat = self.pipeline.sample_slat(cond, coords, slat_sampler_params)
+            outputs = self.decode_slat(slat, ["mesh"])
             mesh = to_trimesh(outputs["mesh"][0])
             mesh = post_process_mesh(mesh, self.ref_mesh)
+            
             meshes.append(mesh)
             slats.append(slat)
 
