@@ -244,7 +244,7 @@ def render_photo_open3d(mesh,
 
     return pil_img
 
-class Optimize3DTrainer:
+class Trainer:
     def __init__(self, config):
         self.config = config
         self.accelerator = Accelerator(log_with="wandb")
@@ -290,7 +290,6 @@ class Optimize3DTrainer:
                     imported_py_files.add(abs_path)
 
         self.accelerator.get_tracker("wandb").run.log_code(".", include_fn=lambda path: path in imported_py_files)
-
 
     def run(self):
         if self.config.eval_freq > 0:
@@ -385,6 +384,7 @@ class Optimize3DTrainer:
         self.log_objective_metrics(objective_values, step=step, stage="eval")
         self.save_parameters(step)
 
+    @torch.inference_mode()
     def generate(
         self,
         struct_prior: Optional[torch.Tensor] = None,
@@ -416,7 +416,7 @@ class Optimize3DTrainer:
             cond = self.pipeline.get_cond([self.prompt])
             coords = self.pipeline.sample_sparse_structure(cond, 1, sparse_structure_sampler_params)
             slat = self.pipeline.sample_slat(cond, coords, slat_sampler_params)
-            outputs = self.decode_slat(slat, ["mesh"])
+            outputs = self.pipeline.decode_slat(slat, ["mesh"])
             mesh = to_trimesh(outputs["mesh"][0])
             mesh = post_process_mesh(mesh, self.ref_mesh)
             
@@ -495,11 +495,14 @@ class Optimize3DTrainer:
         self.accelerator.wait_for_everyone()
         gathered_objective_values = self.accelerator.gather(objective_values)
 
-        prefix = "" if stage == "train" else f"{stage}_"
+        prefix = {
+            "train": "",
+            "eval": "eval_",
+        }
         total_batch_size = self.config.batch_size * self.accelerator.num_processes
         metrics = {
-            f"{prefix}objective_values_mean": gathered_objective_values.mean().item(),
-            f"{prefix}objective_values_std": gathered_objective_values.std().item(),
+            prefix[stage] + "objective_values_mean": gathered_objective_values.mean().item(),
+            prefix[stage] + "objective_values_std": gathered_objective_values.std().item(),
             "objective_evaluations": total_batch_size * step,
             "mu_norm": self.mu.norm().item(),
         }
@@ -534,9 +537,7 @@ class Optimize3DTrainer:
             r3=self.structure_resolution,
         )
 
-    def _unflatten_slat(self, tensor: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-        if tensor is None:
-            return None
+    def _unflatten_slat(self, tensor: torch.Tensor) -> torch.Tensor:
         return einops.rearrange(
             tensor,
             "... (c l) -> ... c l",
@@ -544,12 +545,7 @@ class Optimize3DTrainer:
             l=self.slat_length,
         )
 
-
-def main(_):
-    trainer = Optimize3DTrainer(FLAGS.config)
-    trainer.run()
-
-
 if __name__ == "__main__":
-    app.run(main)
-
+    FLAGS(sys.argv)
+    trainer = Trainer(FLAGS.config)
+    trainer.run()

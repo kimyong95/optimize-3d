@@ -1,9 +1,7 @@
 # set -a; source .env; set +a
 # docker run --rm --runtime=nvidia \
-#   --gpus \"device=0,1,2,3\" --shm-size 2g -p 8000:8000 -e NGC_API_KEY \
+#   --gpus \"device=0,1\" --shm-size 2g -p 8000:8000 -e NGC_API_KEY \
 #   -t nvcr.io/nim/nvidia/domino-automotive-aero:2.0.0
-
-# conda install conda-forge::openfoam
 
 import io, httpx, numpy
 import tempfile
