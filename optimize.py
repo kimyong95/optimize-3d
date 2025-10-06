@@ -18,8 +18,7 @@ from accelerate import Accelerator
 from accelerate.utils import set_seed
 from ml_collections import config_flags
 from PIL import Image
-
-from rewards import DragCoefficientEstimator
+from rewards import ObjectiveEvaluator
 from trellis.pipelines import TrellisTextTo3DPipeline
 from trellis.representations.mesh.cube2mesh import MeshExtractResult
 from value_model import ValueModel
@@ -105,7 +104,6 @@ def to_trimesh(mesh_result: MeshExtractResult) -> trimesh.Trimesh:
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     return mesh
 
-
 def post_process_mesh(mesh: trimesh.Trimesh, ref_mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     """
     - Rotate +90° around X, then +90° around Z (about AABB centroid).
@@ -153,97 +151,6 @@ def post_process_mesh(mesh: trimesh.Trimesh, ref_mesh: trimesh.Trimesh) -> trime
 
     return mesh
 
-def render_photo_open3d(mesh,
-                        yaw_deg=30.0,
-                        pitch_deg=20.0,
-                        r=5.0,
-                        resolution=(1024, 1024),
-                        fov_deg=60.0,
-                        base_color=(1.0, 1.0, 1.0, 1.0),
-                        bg_color=(1.0, 1.0, 1.0, 1.0)) -> Image.Image:
-    """
-    Take a 'photo' of a trimesh.Trimesh using Open3D OffscreenRenderer.
-    Camera orbits the AABB center via (yaw, pitch, r). Headless-safe.
-    Returns: PIL.Image (RGBA or RGB depending on support).
-    """
-
-    # ---- Orbit camera around AABB center ----
-    center = np.asarray(mesh.bounding_box.centroid, dtype=float)
-    yaw   = np.deg2rad(yaw_deg)
-    pitch = np.deg2rad(pitch_deg)
-    eye = center + np.array([
-        r * np.cos(pitch) * np.cos(yaw),
-        r * np.cos(pitch) * np.sin(yaw),
-        r * np.sin(pitch)
-    ], dtype=float)
-    up = np.array([0.0, 0.0, 1.0], dtype=float)
-
-    # ---- trimesh -> open3d mesh ----
-    o3d_mesh = o3d.geometry.TriangleMesh(
-        vertices=o3d.utility.Vector3dVector(np.array(mesh.vertices, dtype=float, copy=True)),
-        triangles=o3d.utility.Vector3iVector(np.array(mesh.faces, dtype=np.int32, copy=True))
-    )
-    vnorm = getattr(mesh, "vertex_normals", None)
-    if vnorm is not None and len(vnorm) == len(mesh.vertices):
-        o3d_mesh.vertex_normals = o3d.utility.Vector3dVector(np.array(vnorm, dtype=float, copy=True))
-    else:
-        o3d_mesh.compute_vertex_normals()
-
-    # ---- Renderer & scene ----
-    W, H = map(int, resolution)
-    renderer = o3d.visualization.rendering.OffscreenRenderer(W, H)
-    scene = renderer.scene
-
-    # Background (RGBA if supported; RGB fallback)
-    try:
-        scene.set_background(bg_color)
-    except TypeError:
-        scene.set_background(bg_color[:3])
-
-    # Material
-    mat = o3d.visualization.rendering.MaterialRecord()
-    mat.shader = "defaultLit"
-    mat.base_color = base_color
-    if hasattr(mat, "base_roughness"): mat.base_roughness = 0.6
-    if hasattr(mat, "base_metallic"):  mat.base_metallic = 0.0
-    scene.add_geometry("mesh", o3d_mesh, mat)
-
-    # ---- Camera ----
-    aspect = W / float(H)
-    bbox_extent = float(np.linalg.norm(np.asarray(mesh.bounding_box.extents, float)))
-    near = max(1e-3, 0.01 * max(1.0, r))
-    far  = r + 4.0 * max(1.0, bbox_extent) + 10.0 * near
-    scene.camera.set_projection(
-        fov_deg, aspect, near, far,
-        o3d.visualization.rendering.Camera.FovType.Vertical
-    )
-    scene.camera.look_at(center, eye, up)
-
-    # ---- Lighting (safe across versions) ----
-    target = scene if not hasattr(scene, "scene") else scene.scene
-    if hasattr(target, "set_ambient_light"):
-        try: target.set_ambient_light([0.25, 0.25, 0.25])
-        except Exception: pass
-    if hasattr(target, "add_directional_light"):
-        try: target.add_directional_light("sun", [-0.5, -0.5, -1.0], [1, 1, 1], 90000.0, True)
-        except Exception: pass
-
-    # ---- Render ----
-    o3d_img = renderer.render_to_image()
-
-    # Robust conversion to numpy for PIL:
-    np_img = np.asarray(o3d_img)
-    # Ensure contiguous buffer
-    np_img = np.ascontiguousarray(np_img)
-    # Ensure uint8 (some builds may return float [0,1])
-    if np_img.dtype != np.uint8:
-        np_img = (np.clip(np_img, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-
-    # Create PIL image without 'mode=' kwarg (avoids deprecation warning)
-    pil_img = Image.fromarray(np_img)
-
-    return pil_img
-
 class Trainer:
     def __init__(self, config):
         self.config = config
@@ -251,7 +158,7 @@ class Trainer:
         self.accelerator.init_trackers(
             project_name="optimize-3d",
             config=config.to_dict(),
-            init_kwargs={"wandb": {"name": config.run_name}}
+            init_kwargs={"wandb": {"name": config.run_name, "config": config.to_dict()}}
         )
 
         set_seed(config.seed, device_specific=True)
@@ -259,7 +166,7 @@ class Trainer:
         self.pipeline = TrellisTextTo3DPipeline.from_pretrained("microsoft/TRELLIS-text-xlarge")
         self.pipeline.to(self.device)
 
-        self.dc_estimator = DragCoefficientEstimator()
+        self.objective_evaluator = ObjectiveEvaluator(objective=config.objective)
         self.ref_mesh = trimesh.load(config.ref_mesh_path)
         self.prompt = getattr(config, "prompt", "A car.")
 
@@ -269,8 +176,10 @@ class Trainer:
         self.value_model = ValueModel(dimension=self.slat_dimension)
         self.value_model.to(self.device)
 
-        self._log_code()
+        self._init_renderer()
 
+        self._log_code()
+        
     @property
     def device(self):
         return self.accelerator.device
@@ -290,6 +199,11 @@ class Trainer:
                     imported_py_files.add(abs_path)
 
         self.accelerator.get_tracker("wandb").run.log_code(".", include_fn=lambda path: path in imported_py_files)
+
+    def _init_renderer(self):
+        self.renderer = o3d.visualization.rendering.OffscreenRenderer(1024, 1024)
+        self.renderer.scene.set_background((1.0, 1.0, 1.0, 1.0))
+        self.renderer.scene.scene.add_directional_light("sun", [-0.5, -0.5, -1.0], [1, 1, 1], 90000.0, True)
 
     def run(self):
         if self.config.eval_freq > 0:
@@ -312,7 +226,7 @@ class Trainer:
         )
 
         meshes, slats = self.generate(struct_noise=noise_projected, slat_noise=noise_projected_slat)
-        objective_values = self.dc_estimator(meshes)
+        objective_values = self.objective_evaluator(meshes)
         objective_values = torch.from_numpy(objective_values).to(self.device)
 
         self.accelerator.wait_for_everyone()
@@ -377,7 +291,7 @@ class Trainer:
             slat_noise=noise_projected_slat
         )
 
-        objective_values = self.dc_estimator(meshes)
+        objective_values = self.objective_evaluator(meshes)
         objective_values = torch.from_numpy(objective_values).to(self.device)
         self.log_meshes(meshes, slats, objective_values, step, stage="eval")
 
@@ -411,7 +325,7 @@ class Trainer:
                 "noise_level": 0.7,
                 **({"prior_noise": slat_prior[i:i + 1, :]} if slat_prior is not None else {}),
                 "intermediate_noise": slat_noise[:, i:i + 1, :],
-            }
+            } if self.config.optimize_slat else {}
 
             cond = self.pipeline.get_cond([self.prompt])
             coords = self.pipeline.sample_sparse_structure(cond, 1, sparse_structure_sampler_params)
@@ -473,18 +387,19 @@ class Trainer:
             "side": {"yaw_deg": 90, "pitch_deg": 10},
             "angle": {"yaw_deg": 45, "pitch_deg": 20},
         }
-
         wandb_images = defaultdict(list)
+
         for view_name, view_param in views.items():
             for idx, (mesh, objective_value) in enumerate(zip(gather_meshes, gather_objective_values)):
                 wandb_image = wandb.Image(
-                    render_photo_open3d(mesh, **view_param),
+                    self.render_photo_open3d(mesh, **view_param),
                     caption=f"i={idx},f={objective_value:.4f}",
                     file_type="jpeg",
                 )
                 wandb_images[f"{stage}_{view_name}_images"].append(wandb_image)
         wandb_tracker = self.accelerator.get_tracker("wandb")
         wandb_tracker.log(wandb_images, step=step)
+
 
     def log_objective_metrics(
         self,
@@ -544,6 +459,82 @@ class Trainer:
             c=self.slat_channels,
             l=self.slat_length,
         )
+
+    def render_photo_open3d(self,
+                            mesh,
+                            yaw_deg=30.0,
+                            pitch_deg=20.0,
+                            r=5.0,
+                            fov_deg=60.0,
+                            base_color=(1.0, 1.0, 1.0, 1.0),
+                            bg_color=(1.0, 1.0, 1.0, 1.0)) -> Image.Image:
+        """
+        Take a 'photo' of a trimesh.Trimesh using Open3D OffscreenRenderer.
+        Camera orbits the AABB center via (yaw, pitch, r). Headless-safe.
+        Returns: PIL.Image (RGBA or RGB depending on support).
+        """
+
+        # ---- Orbit camera around AABB center ----
+        center = np.asarray(mesh.bounding_box.centroid, dtype=float)
+        yaw   = np.deg2rad(yaw_deg)
+        pitch = np.deg2rad(pitch_deg)
+        eye = center + np.array([
+            r * np.cos(pitch) * np.cos(yaw),
+            r * np.cos(pitch) * np.sin(yaw),
+            r * np.sin(pitch)
+        ], dtype=float)
+        up = np.array([0.0, 0.0, 1.0], dtype=float)
+
+        # ---- trimesh -> open3d mesh ----
+        o3d_mesh = o3d.geometry.TriangleMesh(
+            vertices=o3d.utility.Vector3dVector(np.array(mesh.vertices, dtype=float, copy=True)),
+            triangles=o3d.utility.Vector3iVector(np.array(mesh.faces, dtype=np.int32, copy=True))
+        )
+        vnorm = getattr(mesh, "vertex_normals", None)
+        if vnorm is not None and len(vnorm) == len(mesh.vertices):
+            o3d_mesh.vertex_normals = o3d.utility.Vector3dVector(np.array(vnorm, dtype=float, copy=True))
+        else:
+            o3d_mesh.compute_vertex_normals()
+
+        # ---- Renderer & scene ----
+        scene = self.renderer.scene
+        scene.clear_geometry()
+
+        # Material
+        mat = o3d.visualization.rendering.MaterialRecord()
+        mat.shader = "defaultLit"
+        mat.base_color = base_color
+        if hasattr(mat, "base_roughness"): mat.base_roughness = 0.6
+        if hasattr(mat, "base_metallic"):  mat.base_metallic = 0.0
+        scene.add_geometry("mesh", o3d_mesh, mat)
+
+        # ---- Camera ----
+        aspect = 1.0
+        bbox_extent = float(np.linalg.norm(np.asarray(mesh.bounding_box.extents, float)))
+        near = max(1e-3, 0.01 * max(1.0, r))
+        far  = r + 4.0 * max(1.0, bbox_extent) + 10.0 * near
+        scene.camera.set_projection(
+            fov_deg, aspect, near, far,
+            o3d.visualization.rendering.Camera.FovType.Vertical
+        )
+        scene.camera.look_at(center, eye, up)
+
+
+        # ---- Render ----
+        o3d_img = self.renderer.render_to_image()
+
+        # Robust conversion to numpy for PIL:
+        np_img = np.asarray(o3d_img)
+        # Ensure contiguous buffer
+        np_img = np.ascontiguousarray(np_img)
+        # Ensure uint8 (some builds may return float [0,1])
+        if np_img.dtype != np.uint8:
+            np_img = (np.clip(np_img, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+
+        # Create PIL image without 'mode=' kwarg (avoids deprecation warning)
+        pil_img = Image.fromarray(np_img)
+
+        return pil_img
 
 if __name__ == "__main__":
     FLAGS(sys.argv)

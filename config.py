@@ -11,11 +11,13 @@ def get_config():
     config.guidance_scale = 7.0
 
     config.run_name = "optimize-3d"
-    config.batch_size = 16
+    config.batch_size = 8
     
     config.eval_freq = 1
     
     config.ref_mesh_path = "drag-force/assets/drivaer_1_single_solid.stl"
+    config.objective = "drag-coefficient"
+    
     config.optimize_slat = True
 
     return config

@@ -37,9 +37,8 @@ def retry(times, failed_return, exceptions, backoff_factor=1):
         return wrapper
     return decorator
 
-
-class DragCoefficientEstimator:
-    def __init__(self, domain_name="localhost", port="8000"):
+class ObjectiveEvaluator:
+    def __init__(self, domain_name="localhost", port="8000", objective="drag_coefficient"):
         self.url = f"http://{domain_name}:{port}/v1/infer"
         self.data = {
             "stream_velocity": "30.0", 
@@ -47,35 +46,12 @@ class DragCoefficientEstimator:
             "point_cloud_size": "500000",
         }
 
+        self.objective = objective
+
         # --- Constants for Cd calculation (no new user parameters) ---
         self._RHO_AIR = 1.225  # kg/m^3 (ISA sea-level)
         self._GRID_RES = 512   # internal resolution for frontal-area estimate
 
-    # @staticmethod
-    # def frontal_area(mesh: trimesh.Trimesh, min_proj_tri_area=1e-9) -> float:
-    #     """
-    #     Frontal (projected) area on the Y–Z plane in the mesh's native units^2.
-    #     Assumes +X is the flow direction; projection drops X and keeps (Y, Z).
-    #     """
-    #     # (n_faces, 3, 3) -> (n_faces, 3, 2) picking Y,Z columns
-    #     tri_yz = mesh.triangles[:, :, [1, 2]]
-
-    #     # Filter out degenerate projected triangles
-    #     v0, v1, v2 = tri_yz[:, 0], tri_yz[:, 1], tri_yz[:, 2]
-    #     # 2D triangle area via cross product
-    #     areas2d = 0.5 * numpy.abs(
-    #         (v1[:, 0] - v0[:, 0]) * (v2[:, 1] - v0[:, 1]) -
-    #         (v2[:, 0] - v0[:, 0]) * (v1[:, 1] - v0[:, 1])
-    #     )
-    #     keep = areas2d > min_proj_tri_area
-    #     if not numpy.any(keep):
-    #         return 0.0
-
-    #     # Build 2D triangles as shapely Polygons and union them
-    #     polys = shapely.polygons(tri_yz[keep]) 
-    #     silhouette = shapely.union_all(polys)
-    #     silhouette = silhouette.buffer(0)
-    #     return float(silhouette.area)
 
     @staticmethod
     def frontal_area(mesh: trimesh.Trimesh,
@@ -141,11 +117,17 @@ class DragCoefficientEstimator:
         with numpy.load(io.BytesIO(r.content)) as output_data:
             output_dict = {key: output_data[key] for key in output_data.keys()}
         
-        drag_force = output_dict["drag_force"]
-        frontal_area = self.frontal_area(mesh)
-
-        drag_coefficient = self.force_to_coefficient(drag_force, frontal_area)
-        return drag_coefficient
+        if self.objective == "drag-coefficient":
+            drag_force = output_dict["drag_force"]
+            frontal_area = self.frontal_area(mesh)
+            drag_coefficient = self.force_to_coefficient(drag_force, frontal_area)
+            objective_value = drag_coefficient
+        elif self.objective == "lift-force":
+            objective_value = output_dict["lift_force"]
+        else:
+            raise ValueError(f"Unknown objective: {self.objective}")
+        
+        return objective_value
     
     def evaluate_batch(self, meshes, max_workers=8):
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
