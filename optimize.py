@@ -22,9 +22,10 @@ from rewards import ObjectiveEvaluator
 from trellis.pipelines import TrellisTextTo3DPipeline
 from trellis.representations.mesh.cube2mesh import MeshExtractResult
 from value_model import ValueModel
+from utils import collect_calls
 
 FLAGS = flags.FLAGS
-config_flags.DEFINE_config_file("config", "config.py", "Training configuration.")
+config_flags.DEFINE_config_file("config", "config/optimize.py", "Training configuration.")
 
 
 def update_parameters(mu, sigma, noise, objective_values):
@@ -165,15 +166,14 @@ class Trainer:
 
         self.pipeline = TrellisTextTo3DPipeline.from_pretrained("microsoft/TRELLIS-text-xlarge")
         self.pipeline.to(self.device)
-
+        
         self.objective_evaluator = ObjectiveEvaluator(objective=config.objective)
         self.ref_mesh = trimesh.load(config.ref_mesh_path)
-        self.prompt = getattr(config, "prompt", "A car.")
+        self.prompt = config.prompt
 
-        self._initialize_structure_distribution()
-        self._initialize_slat_distribution()
+        self._init_parameters()
 
-        self.value_model = ValueModel(dimension=self.slat_dimension)
+        self.value_model = ValueModel(dimension=self.structure_dimension)
         self.value_model.to(self.device)
 
         self._init_renderer()
@@ -218,16 +218,9 @@ class Trainer:
     def train_step(self, step: int) -> None:
         noise, noise_projected = get_noise(self.mu, self.sigma, self.config.batch_size, self.device)
 
-        noise_slat, noise_projected_slat = get_noise(
-            self.mu_slat,
-            self.sigma_slat,
-            self.config.batch_size,
-            self.device,
-        )
-
-        meshes, slats = self.generate(struct_noise=noise_projected, slat_noise=noise_projected_slat)
+        meshes, slats, pred_data_trajectory = self.generate(intermediate_noise=noise_projected)
         objective_values = self.objective_evaluator(meshes)
-        objective_values = torch.from_numpy(objective_values).to(self.device)
+        objective_values = torch.from_numpy(objective_values).to(device=self.device, dtype=torch.float32)
 
         self.accelerator.wait_for_everyone()
         total_batch_size = self.config.batch_size * self.accelerator.num_processes
@@ -237,24 +230,25 @@ class Trainer:
         _noise = einops.rearrange(noise, "T B D -> B T D")
         gathered_noise = einops.rearrange(self.accelerator.gather(_noise), "B T D -> T B D")
 
+        _pred_data_trajectory = einops.rearrange(pred_data_trajectory, "T B ... -> B T (...)")
+        gathered_pred_data_trajectory = einops.rearrange(self.accelerator.gather(_pred_data_trajectory), "B T (...) -> T B (...)")
+
         all_objective_values = None
         if self.accelerator.is_main_process:
             all_objective_values = torch.zeros((self.config.num_inference_steps, total_batch_size), device=self.device,)
-            all_objective_values[:, :] = gathered_objective_values[None, :]
+            
+            self.value_model.add_model_data(
+                x = gathered_pred_data_trajectory[-1],
+                y = gathered_objective_values,
+            )
+
+            for t in range(self.config.num_inference_steps - 1):
+                y, _ = self.value_model.predict(gathered_pred_data_trajectory[t])
+                all_objective_values[t] = y
             self.mu, self.sigma = update_parameters(self.mu, self.sigma, gathered_noise, all_objective_values)
         self.mu = accelerate.utils.broadcast(self.mu)
         self.sigma = accelerate.utils.broadcast(self.sigma)
 
-        _noise_slat = einops.rearrange(noise_slat, "T B D -> B T D")
-        gathered_noise_slat = einops.rearrange(self.accelerator.gather(_noise_slat), "B T D -> T B D")
-        if self.accelerator.is_main_process:
-            all_objective_values = torch.zeros((self.config.num_inference_steps, total_batch_size), device=self.device,)
-            all_objective_values[:, :] = gathered_objective_values[None, :]
-            self.mu_slat, self.sigma_slat = update_parameters(self.mu_slat, self.sigma_slat, gathered_noise_slat, all_objective_values)
-        self.mu_slat = accelerate.utils.broadcast(self.mu_slat)
-        self.sigma_slat = accelerate.utils.broadcast(self.sigma_slat)
-
-        self.log_meshes(meshes, slats, objective_values, step=step, stage="train")
         self.log_objective_metrics(objective_values,step=step,stage="train")
 
     def evaluate(self, step: int) -> None:
@@ -262,33 +256,20 @@ class Trainer:
             self.config.batch_size, device=self.device
         )
         eval_noise = torch.load("eval_noise/struct_tensor.pt", map_location=self.device)[:, prompts_idx, :]
-        struct_prior = eval_noise[0]
-        struct_intermidiate = eval_noise[1:]
-
-        eval_noise_slat = torch.load("eval_noise/slat_tensor.pt", map_location=self.device)[:, prompts_idx, :]
-        slat_prior = eval_noise_slat[0]
-        slat_intermidiate = eval_noise_slat[1:]
+        prior_noise = eval_noise[0]
+        intermidiate_noise = eval_noise[1:]
 
         _, noise_projected = get_noise(
             self.mu,
             self.sigma,
             self.config.batch_size,
             self.device,
-            base_noise=struct_intermidiate,
-        )
-        _, noise_projected_slat = get_noise(
-            self.mu_slat,
-            self.sigma_slat,
-            self.config.batch_size,
-            self.device,
-            base_noise=slat_intermidiate,
+            base_noise=intermidiate_noise,
         )
 
-        meshes, slats = self.generate(
-            struct_prior=struct_prior,
-            struct_noise=noise_projected,
-            slat_prior=slat_prior,
-            slat_noise=noise_projected_slat
+        meshes, slats, _ = self.generate(
+            prior_noise=prior_noise,
+            intermediate_noise=noise_projected,
         )
 
         objective_values = self.objective_evaluator(meshes)
@@ -301,43 +282,34 @@ class Trainer:
     @torch.inference_mode()
     def generate(
         self,
-        struct_prior: Optional[torch.Tensor] = None,
-        struct_noise: torch.Tensor = None,
-        slat_prior: Optional[torch.Tensor] = None,
-        slat_noise: torch.Tensor = None,
+        prior_noise: Optional[torch.Tensor] = None,
+        intermediate_noise: torch.Tensor = None,
     ) -> Tuple[List[trimesh.Trimesh], List[torch.Tensor]]:
         meshes: List[trimesh.Trimesh] = []
         slats: List[torch.Tensor] = []
+        pred_data_trajectory: List[torch.Tensor] = []
+        intermediate_noise = self._unflatten_structure(intermediate_noise)
 
-        struct_noise = self._unflatten_structure(struct_noise)
-        slat_noise = self._unflatten_slat(slat_noise) if slat_noise is not None else None
 
-        for i in range(self.config.batch_size):
-            sparse_structure_sampler_params = {
-                "steps": self.config.num_inference_steps,
-                "noise_level": 0.7,
-                **({"prior_noise": struct_prior[i:i + 1, :]} if struct_prior is not None else {}),
-                "intermediate_noise": struct_noise[:, i:i + 1, :],
-            }
+        sparse_structure_sampler_params = {
+            "steps": self.config.num_inference_steps,
+            "noise_level": 0.7,
+            **({"prior_noise": prior_noise} if prior_noise is not None else {}),
+            "intermediate_noise": intermediate_noise,
+        }
 
-            slat_sampler_params = {
-                "steps": self.config.num_inference_steps,
-                "noise_level": 0.7,
-                **({"prior_noise": slat_prior[i:i + 1, :]} if slat_prior is not None else {}),
-                "intermediate_noise": slat_noise[:, i:i + 1, :],
-            } if self.config.optimize_slat else {}
+        cond = self.pipeline.get_cond([self.prompt]*self.config.batch_size)
+        with collect_calls(self.pipeline.sparse_structure_sampler.sample) as collected_data:            
+            coords = self.pipeline.sample_sparse_structure(cond, self.config.batch_size, sparse_structure_sampler_params)
+        pred_data_trajectory = torch.stack(collected_data[0]["return"]["pred_x_0"][1:] + [collected_data[0]["return"]["samples"]])
 
-            cond = self.pipeline.get_cond([self.prompt])
-            coords = self.pipeline.sample_sparse_structure(cond, 1, sparse_structure_sampler_params)
-            slat = self.pipeline.sample_slat(cond, coords, slat_sampler_params)
-            outputs = self.pipeline.decode_slat(slat, ["mesh"])
-            mesh = to_trimesh(outputs["mesh"][0])
-            mesh = post_process_mesh(mesh, self.ref_mesh)
-            
-            meshes.append(mesh)
-            slats.append(slat)
+        slats = self.pipeline.sample_slat(cond, coords)
 
-        return meshes, slats
+        meshes = [ self.pipeline.decode_slat(slat, ["mesh"])["mesh"][0] for slat in slats ]
+        meshes = [ to_trimesh(mesh) for mesh in meshes ]
+        meshes = [ post_process_mesh(mesh, self.ref_mesh) for mesh in meshes ]
+
+        return meshes, slats, pred_data_trajectory
 
     def save_parameters(self, step: int) -> None:
         if not self.accelerator.is_main_process:
@@ -346,8 +318,6 @@ class Trainer:
         parameters = {
             "mu": self.mu,
             "sigma": self.sigma,
-            "mu_slat": self.mu_slat,
-            "sigma_slat": self.sigma_slat,
         }
         wandb_dir = self.accelerator.get_tracker("wandb").run.dir.removesuffix("/files")
         wandb_dir = os.path.relpath(wandb_dir, os.getcwd())
@@ -424,7 +394,7 @@ class Trainer:
 
         self.accelerator.log(metrics, step=step)
 
-    def _initialize_structure_distribution(self) -> None:
+    def _init_parameters(self) -> None:
         structure_model = self.pipeline.models["sparse_structure_flow_model"]
         self.structure_resolution = structure_model.resolution
         self.structure_channels = structure_model.in_channels
@@ -433,14 +403,15 @@ class Trainer:
         self.mu = torch.zeros((steps, self.structure_dimension), device=self.device)
         self.sigma = torch.ones((steps, self.structure_dimension), device=self.device)
 
-    def _initialize_slat_distribution(self) -> None:
-        self.slat_length = 30000
-        slat_model = self.pipeline.models.get("slat_flow_model")
-        self.slat_channels = slat_model.in_channels
-        self.slat_dimension = self.slat_channels * self.slat_length
-        steps = self.config.num_inference_steps
-        self.mu_slat = torch.zeros((steps, self.slat_dimension), device=self.device)
-        self.sigma_slat = torch.ones((steps, self.slat_dimension), device=self.device)
+    def _flatten_structure(self, tensor: torch.Tensor) -> torch.Tensor:
+        return einops.rearrange(
+            tensor,
+            "... c r1 r2 r3 -> ... (c r1 r2 r3)",
+            c=self.structure_channels,
+            r1=self.structure_resolution,
+            r2=self.structure_resolution,
+            r3=self.structure_resolution,
+        )
 
     def _unflatten_structure(self, tensor: torch.Tensor) -> torch.Tensor:
         return einops.rearrange(
@@ -450,14 +421,6 @@ class Trainer:
             r1=self.structure_resolution,
             r2=self.structure_resolution,
             r3=self.structure_resolution,
-        )
-
-    def _unflatten_slat(self, tensor: torch.Tensor) -> torch.Tensor:
-        return einops.rearrange(
-            tensor,
-            "... (c l) -> ... c l",
-            c=self.slat_channels,
-            l=self.slat_length,
         )
 
     def render_photo_open3d(self,
