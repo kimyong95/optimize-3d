@@ -10,12 +10,16 @@ def get_config():
     config.num_inference_steps = 25
     config.guidance_scale = 7.0
 
-    config.run_name = "optimize-3d"
-    config.batch_size = 16
-    
-    config.eval_freq = 10
+    config.run_name = "dsearch"
     
     config.ref_mesh_path = "drag-force/assets/sample.stl"
     config.objective = "drag-coefficient"
+
+    # algorithm-specific setting
+    # total objective evaluation ≈ 76 * 25 = 1900
+    # but actually due to rounding it is ≈ 1626
+    config.init_batch_size = 32      # b_0 in the paper
+    config.final_batch_size = 16     # b_1 in the paper
+    config.evaluation_budget = 76    # C in the paper
 
     return config
