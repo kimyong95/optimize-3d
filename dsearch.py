@@ -155,7 +155,12 @@ class Trainer:
         cond = self.pipeline.get_cond([self.prompt]*self.config.init_batch_size)
         coords = self.pipeline.sample_sparse_structure(cond, self.config.init_batch_size, sparse_structure_sampler_params)
         
+        cond = self.pipeline.get_cond([self.prompt]*self.config.final_batch_size)
         meshes, slats = self.generate_meshes_from_coords(cond, coords)
+
+        objective_values = self.objective_evaluator(meshes)
+        objective_values = torch.from_numpy(objective_values).to(self.device)
+        self.log_meshes(meshes, slats, objective_values, step=self.config.num_inference_steps-1, stage="eval")
 
 
     def generate_meshes_from_coords(self, cond, coords):
