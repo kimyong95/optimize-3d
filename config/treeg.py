@@ -6,7 +6,6 @@ def get_config():
     config.seed = 0
 
     config.prompt = "car"
-    config.optimization_steps = 100
     config.num_inference_steps = 25
     config.guidance_scale = 7.0
 
