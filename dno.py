@@ -25,6 +25,7 @@ from trellis.pipelines import TrellisTextTo3DPipeline
 from trellis.representations.mesh.cube2mesh import MeshExtractResult
 from typing import Any
 from torch.utils.checkpoint import checkpoint
+from utils import collect_calls, to_trimesh, post_process_mesh
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/treeg.py", "Training configuration.")
@@ -132,60 +133,6 @@ def update_parameters(mu, sigma, noise, objective_values):
         ).mean(0)
 
     return mu, sigma
-
-def to_trimesh(mesh_result: MeshExtractResult) -> trimesh.Trimesh:
-    vertices = mesh_result.vertices.cpu().numpy()
-    faces = mesh_result.faces.cpu().numpy()
-    vertices = vertices @ np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
-    mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-    return mesh
-
-def post_process_mesh(mesh: trimesh.Trimesh, ref_mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    """
-    - Rotate +90° around X, then +90° around Z (about AABB centroid).
-    - Uniformly scale to match reference XY span using s = (sx + sy)/2 (keeps aspect ratio).
-    - Translate so XY centers match AND z-min ("floor") equals the reference.
-    Returns the same mesh object after in-place transforms.
-    """
-    if mesh is None or ref_mesh is None:
-        return None
-
-    # 1) ROTATE: X +90°, then Z +90°
-    c = mesh.bounding_box.centroid
-    Rx = trimesh.transformations.rotation_matrix(np.deg2rad(90.0), [1.0, 0.0, 0.0], point=c)
-    mesh.apply_transform(Rx)
-    c = mesh.bounding_box.centroid
-    Rz = trimesh.transformations.rotation_matrix(np.deg2rad(90.0), [0.0, 0.0, 1.0], point=c)
-    mesh.apply_transform(Rz)
-
-    # 2) SCALE: compute from bounds AFTER rotations
-    ref_bounds = ref_mesh.bounds
-    m_bounds = mesh.bounds
-    ref_w = float(ref_bounds[1, 0] - ref_bounds[0, 0])
-    ref_h = float(ref_bounds[1, 1] - ref_bounds[0, 1])
-    m_w   = float(m_bounds[1, 0] - m_bounds[0, 0])
-    m_h   = float(m_bounds[1, 1] - m_bounds[0, 1])
-
-    sx = ref_w / m_w
-    sy = ref_h / m_h
-    s  = (sx + sy) / 2.0  # lock ratio by averaging
-
-    c = mesh.bounding_box.centroid
-    S = trimesh.transformations.scale_matrix(float(s), c)
-    mesh.apply_transform(S)
-
-    # 3) TRANSLATE: align XY centers and Z floor (z-min) in one shot
-    m_bounds = mesh.bounds  # after scaling
-    m_cxy = m_bounds.mean(axis=0)[:2]
-    r_cxy = ref_bounds.mean(axis=0)[:2]
-    dxy = (r_cxy - m_cxy)
-
-    dz = float(ref_bounds[0, 2] - m_bounds[0, 2])  # match z-min ("floor")
-
-    T = trimesh.transformations.translation_matrix([float(dxy[0]), float(dxy[1]), dz])
-    mesh.apply_transform(T)
-
-    return mesh
 
 class Trainer:
     def __init__(self, config):
@@ -325,7 +272,7 @@ class Trainer:
         slats = self.pipeline.sample_slat(cond, coords)
         meshes = [ self.pipeline.decode_slat(slat, ["mesh"])["mesh"][0] for slat in slats ]
         meshes = [ to_trimesh(mesh) for mesh in meshes ]
-        meshes = [ post_process_mesh(mesh, self.ref_mesh) for mesh in meshes ]
+        meshes = [ post_process_mesh(mesh) for mesh in meshes ]
 
         return meshes, slats
 

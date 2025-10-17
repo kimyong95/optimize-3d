@@ -104,8 +104,13 @@ class ObjectiveEvaluator:
         Cd = drag_force_newtons / (q * frontal_area_m2)
         return Cd
 
+    # return [objective_value] lower is better
     @retry(times=10, failed_return=None, exceptions=(HTTPError), backoff_factor=2)
     def evaluate_one(self, mesh, retry_attempt):
+        
+        if self.objective == "volume":
+            return mesh.volume
+
         with tempfile.NamedTemporaryFile(mode='wb+', delete=True, suffix='.stl') as f:
             mesh.export(f.name)
             f.seek(0)

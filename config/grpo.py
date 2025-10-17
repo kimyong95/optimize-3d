@@ -14,10 +14,10 @@ def get_config():
     config.run_name = "grpo"
     
     # total objective evaluations: 16*100=1600
-    config.training_samples_per_epoch = 64
+    config.training_samples_per_epoch = 32
     config.sampling_max_batch_size_per_device = 16
     config.training_max_batch_size_per_device = 1
-    config.training_effective_batch_size = 32
+    config.training_effective_batch_size = 16
     
     config.eval_max_batch_size_per_device = 16
     config.eval_samples = 16
