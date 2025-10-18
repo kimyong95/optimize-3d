@@ -209,10 +209,10 @@ class Trainer:
         step: int,
         stage: str = "train",
     ) -> None:
-        self.accelerator.wait_for_everyone()
         gather_meshes = self.accelerator.gather_for_metrics(meshes)
         gather_slats = self.accelerator.gather_for_metrics(slats)
         gather_objective_values = self.accelerator.gather(objective_values)
+        self.accelerator.wait_for_everyone()
 
         if not self.accelerator.is_main_process:
             return
@@ -251,8 +251,8 @@ class Trainer:
         objective_values: torch.Tensor,
         step: int,
     ) -> None:
-        self.accelerator.wait_for_everyone()
         gathered_objective_values = self.accelerator.gather(objective_values)
+        self.accelerator.wait_for_everyone()
 
         metrics = {
             "objective_values_mean": gathered_objective_values.mean().item(),

@@ -245,10 +245,10 @@ class Trainer:
         step: int,
         stage: str = "train",
     ) -> None:
-        self.accelerator.wait_for_everyone()
         gather_meshes = self.accelerator.gather_for_metrics(meshes)
         gather_slats = self.accelerator.gather_for_metrics(slats)
         gather_objective_values = self.accelerator.gather(objective_values)
+        self.accelerator.wait_for_everyone()
 
         if not self.accelerator.is_main_process:
             return
@@ -287,8 +287,8 @@ class Trainer:
         objective_values: torch.Tensor,
         step: int,
     ) -> None:
-        self.accelerator.wait_for_everyone()
         gathered_objective_values = self.accelerator.gather(objective_values)
+        self.accelerator.wait_for_everyone()
 
         total_batch_size = self.config.total_num_samples * self.config.expansion_size
         metrics = {

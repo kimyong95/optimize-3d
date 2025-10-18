@@ -280,10 +280,10 @@ class Trainer:
         step: int,
         stage: str = "train",
     ) -> None:
-        self.accelerator.wait_for_everyone()
         gather_meshes = self.accelerator.gather_for_metrics(meshes)
         gather_slats = self.accelerator.gather_for_metrics(slats)
         gather_objective_values = self.accelerator.gather(objective_values)
+        self.accelerator.wait_for_everyone()
 
         if not self.accelerator.is_main_process:
             return
@@ -324,8 +324,8 @@ class Trainer:
         step: int,
         stage: str,
     ) -> None:
-        self.accelerator.wait_for_everyone()
         gathered_objective_values = self.accelerator.gather(objective_values)
+        self.accelerator.wait_for_everyone()
 
         prefix = {
             "train": "",

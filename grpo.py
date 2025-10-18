@@ -293,6 +293,7 @@ class Trainer:
 
         self.log_meshes(all_meshes, all_slats, all_objective_values, epoch, stage="eval")
         self.log_objective_metrics(all_objective_values, step=epoch, stage="eval")
+        self.accelerator.wait_for_everyone()
 
 
     def log_meshes(
@@ -303,10 +304,10 @@ class Trainer:
         step: int,
         stage: str = "train",
     ) -> None:
-        self.accelerator.wait_for_everyone()
         gather_meshes = self.accelerator.gather_for_metrics(meshes)
         gather_slats = self.accelerator.gather_for_metrics(slats)
         gather_objective_values = self.accelerator.gather(objective_values)
+        self.accelerator.wait_for_everyone()
 
         if not self.accelerator.is_main_process:
             return
@@ -347,8 +348,8 @@ class Trainer:
         step: int,
         stage: str,
     ) -> None:
-        self.accelerator.wait_for_everyone()
         gathered_objective_values = self.accelerator.gather(objective_values)
+        self.accelerator.wait_for_everyone()
 
         prefix = {
             "train": "",
