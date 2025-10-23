@@ -110,6 +110,8 @@ class ObjectiveEvaluator:
         
         if self.objective == "volume":
             return mesh.volume
+        elif self.objective == "bound-volume":
+            return mesh.extents.prod()
 
         with tempfile.NamedTemporaryFile(mode='wb+', delete=True, suffix='.stl') as f:
             mesh.export(f.name)

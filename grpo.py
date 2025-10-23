@@ -53,7 +53,7 @@ def concat(data: Union[List[torch.Tensor], List[List]]):
 class Trainer:
     def __init__(self, config):
         self.config = config
-        self.accelerator = Accelerator(log_with="wandb")
+        self.accelerator = Accelerator(log_with="wandb", mixed_precision="bf16")
         self.accelerator.init_trackers(
             project_name="optimize-3d",
             config=config.to_dict(),
@@ -67,7 +67,6 @@ class Trainer:
         [ model[1].requires_grad_(False) for model in self.pipeline.models.items() ] # disable all gradients
         target_modules = [
             "to_qkv",
-            "to_out",
             "to_q",
             "to_kv",
             "to_out",

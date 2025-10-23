@@ -7,13 +7,13 @@ def get_config():
     config.seed = 0
 
     config.prompt = "car"
-    config.epoches = 25
+    config.epoches = 50
     config.num_inference_steps = 25
     config.guidance_scale = 7.0
     
     config.run_name = "grpo"
     
-    # total objective evaluations: 16*100=1600
+    # total objective evaluations: 32*50=1600
     config.training_samples_per_epoch = 32
     config.sampling_max_batch_size_per_device = 16
     config.training_max_batch_size_per_device = 1

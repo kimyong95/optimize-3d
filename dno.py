@@ -137,7 +137,7 @@ def update_parameters(mu, sigma, noise, objective_values):
 class Trainer:
     def __init__(self, config):
         self.config = config
-        self.accelerator = Accelerator(log_with="wandb")
+        self.accelerator = Accelerator(log_with="wandb", mixed_precision="bf16")
         self.accelerator.init_trackers(
             project_name="optimize-3d",
             config=config.to_dict(),
@@ -216,7 +216,7 @@ class Trainer:
                     "intermediate_noise": ref_noise[1:].unsqueeze(1),
                 }
                 cond = self.pipeline.get_cond([self.prompt])
-                with torch.enable_grad():
+                with torch.enable_grad(), self.accelerator.autocast():
                     ref_coords, ref_xs = self.pipeline.sample_sparse_structure(cond, 1, sparse_structure_sampler_params)
                 ref_meshes, ref_slats = self.generate_meshes_from_coords(cond, ref_coords)
                 ref_objective_value = self.objective_evaluator(ref_meshes)
@@ -249,7 +249,7 @@ class Trainer:
                 est_grad /= (torch.norm(est_grad) + 1e-3)
                 with torch.enable_grad():
                     loss = torch.sum(est_grad * ref_xs[0])
-                    loss.backward()
+                    self.accelerator.backward(loss)
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -294,7 +294,7 @@ class Trainer:
         else:
             noise = torch.randn(num_samples, flow_model.in_channels, reso, reso, reso).to(self.device)
         sampler_params = {**self.sparse_structure_sampler_params, **sampler_params}
-        z_s = self.sparse_structure_sampler.sample(
+        zs = self.sparse_structure_sampler.sample(
             flow_model,
             noise,
             **cond,
@@ -304,7 +304,7 @@ class Trainer:
         
         # Decode occupancy latent
         decoder = self.models['sparse_structure_decoder']
-        xs = decoder(z_s)
+        xs = decoder(zs)
         coords = torch.argwhere(xs>0)[:, [0, 2, 3, 4]].int()
 
         return coords, xs
