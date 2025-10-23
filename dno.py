@@ -197,8 +197,8 @@ class Trainer:
         all_objective_values = []
 
         for _ in range(self.config.total_num_samples):
-            ref_noise = torch.randn((self.config.num_inference_steps + 1, self.structure_channels, self.structure_resolution,self.structure_resolution,self.structure_resolution), device=self.device, requires_grad=True)
-            optimizer = torch.optim.AdamW([ref_noise], lr=0.01, weight_decay=0.0)
+            ref_noise = [torch.randn((1, self.structure_channels, self.structure_resolution,self.structure_resolution,self.structure_resolution), device=self.device, requires_grad=True) for _ in range(self.config.num_inference_steps + 1)]
+            optimizer = torch.optim.AdamW(ref_noise, lr=0.01, weight_decay=0.0)
 
             meshes = []
             slats = []
@@ -212,8 +212,8 @@ class Trainer:
                 sparse_structure_sampler_params = {
                     "steps": self.config.num_inference_steps,
                     "noise_level": 0.7,
-                    "prior_noise": ref_noise[0].unsqueeze(0),
-                    "intermediate_noise": ref_noise[1:].unsqueeze(1),
+                    "prior_noise": ref_noise[0],
+                    "intermediate_noise": ref_noise[1:],
                 }
                 cond = self.pipeline.get_cond([self.prompt])
                 with torch.enable_grad(), self.accelerator.autocast():
@@ -228,7 +228,7 @@ class Trainer:
                 objective_values.append(ref_objective_value)
 
                 # -------------- perturbed ------------- #
-                noise = einops.repeat(ref_noise.detach(), "T ... -> T B ...", B=self.config.batch_size)
+                noise = einops.repeat(torch.stack(ref_noise).detach(), "T 1 ... -> T B ...", B=self.config.batch_size)
                 noise = noise + torch.randn_like(noise) * 0.1
                 sparse_structure_sampler_params = {
                     "steps": self.config.num_inference_steps,
@@ -250,6 +250,7 @@ class Trainer:
                 with torch.enable_grad():
                     loss = torch.sum(est_grad * ref_xs[0])
                     self.accelerator.backward(loss)
+                    self.accelerator.clip_grad_norm_(ref_noise, 1.0)
                 optimizer.step()
                 optimizer.zero_grad()
 
