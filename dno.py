@@ -229,7 +229,7 @@ class Trainer:
 
                 # -------------- perturbed ------------- #
                 noise = einops.repeat(torch.stack(ref_noise).detach(), "T 1 ... -> T B ...", B=self.config.batch_size)
-                noise = noise + torch.randn_like(noise) * 0.1
+                noise = noise + torch.randn_like(noise) * 0.01
                 sparse_structure_sampler_params = {
                     "steps": self.config.num_inference_steps,
                     "noise_level": 0.7,

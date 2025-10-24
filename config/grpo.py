@@ -15,7 +15,7 @@ def get_config():
     
     # total objective evaluations: 32*50=1600
     config.training_samples_per_epoch = 32
-    config.sampling_max_batch_size_per_device = 16
+    config.sampling_max_batch_size_per_device = 4
     config.training_max_batch_size_per_device = 1
     config.training_effective_batch_size = 16
     
@@ -30,7 +30,7 @@ def get_config():
 
     config.clip_range = 0.1
     config.adv_clip_max = 5.0
-    config.kl_beta = 0.01
+    config.kl_beta = 0.04
     config.max_grad_norm = 1.0
 
     return config
