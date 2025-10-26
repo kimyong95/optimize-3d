@@ -15,6 +15,7 @@ import torch
 import torch.nn as nn
 import trimesh
 import wandb
+from tqdm import tqdm
 from absl import app, flags
 from accelerate import Accelerator
 from accelerate.utils import set_seed
@@ -195,18 +196,21 @@ class Trainer:
         all_meshes = []
         all_slats = []
         all_objective_values = []
+        eval_noise = torch.load("eval_noise/struct_tensor.pt", map_location=self.device)
 
-        for _ in range(self.config.total_num_samples):
-            ref_noise = [torch.randn((1, self.structure_channels, self.structure_resolution,self.structure_resolution,self.structure_resolution), device=self.device, requires_grad=True) for _ in range(self.config.num_inference_steps + 1)]
+        for sample_i in tqdm(range(self.config.total_num_samples), desc="Optimizing samples", disable=not self.accelerator.is_main_process, position=0):
+            
+            ref_noise = eval_noise[:,sample_i].unsqueeze(1).clone().to(self.device)
+            ref_noise = list(ref_noise)
+            [x.requires_grad_(True) for x in ref_noise]
             optimizer = torch.optim.AdamW(ref_noise, lr=0.01, weight_decay=0.0)
 
             meshes = []
             slats = []
             objective_values = []
 
-
             # +1 because we want to log the ref_images after last noise update
-            for optimization_i in range(self.config.optimization_steps+1):
+            for optimization_i in tqdm(range(self.config.optimization_steps+1), desc="Optimization steps", leave=False, disable=not self.accelerator.is_main_process, position=1):
                 
                 # ------------- reference ------------- #
                 sparse_structure_sampler_params = {
@@ -258,16 +262,16 @@ class Trainer:
             all_slats.append(slats)
             all_objective_values.append(objective_values)
         
-        # flip: (B, optimization_steps+1) -> (optimization_steps+1, B)
-        all_objective_values = list(map(list, zip(*all_objective_values)))
-        all_meshes = list(map(list, zip(*all_meshes)))
-        all_slats = list(map(list, zip(*all_slats)))
+            # flip: (B, optimization_steps+1) -> (optimization_steps+1, B)
+            all_steps_objective_values = list(map(list, zip(*all_objective_values)))
+            all_steps_meshes = list(map(list, zip(*all_meshes)))
+            all_steps_slats = list(map(list, zip(*all_slats)))
 
-        # log trajectory objective values
-        for i in range(self.config.optimization_steps+1):
-            objective_values_i = torch.stack(all_objective_values[i])[:,0]
-            self.log_objective_metrics(objective_values_i, step=i)
-            self.log_meshes(all_meshes[i],all_slats[i],objective_values_i,step=i)
+            # log trajectory objective values
+            for i in range(self.config.optimization_steps+1):
+                objective_values_i = torch.stack(all_steps_objective_values[i])[:,0]
+                self.log_objective_metrics(objective_values_i, step=i)
+                self.log_meshes(all_steps_meshes[i],all_steps_slats[i],objective_values_i,step=i)
 
     def generate_meshes_from_coords(self, cond, coords):
         slats = self.pipeline.sample_slat(cond, coords)
@@ -338,9 +342,9 @@ class Trainer:
                 pickle.dump(slat.cpu(), f)
 
         views = {
-            "front": {"yaw_deg": 0, "pitch_deg": 10},
+            "front": {"yaw_deg": 180, "pitch_deg": 10},
             "side": {"yaw_deg": 90, "pitch_deg": 10},
-            "angle": {"yaw_deg": 45, "pitch_deg": 20},
+            "angle": {"yaw_deg": 135, "pitch_deg": 20},
         }
         wandb_images = defaultdict(list)
 
@@ -352,8 +356,9 @@ class Trainer:
                     file_type="jpeg",
                 )
                 wandb_images[f"{stage}_{view_name}_images"].append(wandb_image)
+        wandb_images["optimization_step"] = step
         wandb_tracker = self.accelerator.get_tracker("wandb")
-        wandb_tracker.log(wandb_images, step=step)
+        wandb_tracker.log(wandb_images)
 
     def log_objective_metrics(
         self,
@@ -367,15 +372,16 @@ class Trainer:
             "objective_values_mean": gathered_objective_values.mean().item(),
             "objective_values_std": gathered_objective_values.std().item(),
             "objective_evaluations": self.config.total_num_samples * (self.config.batch_size+1) * step,
+            "optimization_step": step,
         }
 
-        self.accelerator.log(metrics, step=step)
+        self.accelerator.log(metrics)
 
     def render_photo_open3d(self,
                             mesh,
                             yaw_deg=30.0,
                             pitch_deg=20.0,
-                            r=5.0,
+                            r=4.0,
                             fov_deg=60.0,
                             base_color=(1.0, 1.0, 1.0, 1.0),
                             bg_color=(1.0, 1.0, 1.0, 1.0)) -> Image.Image:
@@ -410,7 +416,14 @@ class Trainer:
         # ---- Renderer & scene ----
         scene = self.renderer.scene
         scene.clear_geometry()
-
+        scene.set_background(bg_color)
+        scene.scene.set_sun_light(
+            direction=[0.577, -0.577, -0.577], 
+            color=[1.0, 1.0, 1.0],             
+            intensity=100000                   
+        )
+        scene.scene.enable_sun_light(True)
+        
         # Material
         mat = o3d.visualization.rendering.MaterialRecord()
         mat.shader = "defaultLit"

@@ -265,9 +265,9 @@ class Trainer:
                 pickle.dump(slat.cpu(), f)
 
         views = {
-            "front": {"yaw_deg": 0, "pitch_deg": 10},
+            "front": {"yaw_deg": 180, "pitch_deg": 10},
             "side": {"yaw_deg": 90, "pitch_deg": 10},
-            "angle": {"yaw_deg": 45, "pitch_deg": 20},
+            "angle": {"yaw_deg": 135, "pitch_deg": 20},
         }
         wandb_images = defaultdict(list)
 
@@ -303,7 +303,7 @@ class Trainer:
                             mesh,
                             yaw_deg=30.0,
                             pitch_deg=20.0,
-                            r=5.0,
+                            r=4.0,
                             fov_deg=60.0,
                             base_color=(1.0, 1.0, 1.0, 1.0),
                             bg_color=(1.0, 1.0, 1.0, 1.0)) -> Image.Image:
@@ -338,7 +338,14 @@ class Trainer:
         # ---- Renderer & scene ----
         scene = self.renderer.scene
         scene.clear_geometry()
-
+        scene.set_background(bg_color)
+        scene.scene.set_sun_light(
+            direction=[0.577, -0.577, -0.577], 
+            color=[1.0, 1.0, 1.0],             
+            intensity=100000                   
+        )
+        scene.scene.enable_sun_light(True)
+        
         # Material
         mat = o3d.visualization.rendering.MaterialRecord()
         mat.shader = "defaultLit"

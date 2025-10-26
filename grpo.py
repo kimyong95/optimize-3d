@@ -129,7 +129,8 @@ class Trainer:
 
     def run(self):
         if self.config.eval_freq > 0:
-            self.evaluation_step(epoch=0)
+            self.evaluation_step(epoch=0, noisy=False)
+            self.evaluation_step(epoch=0, noisy=True)
         
         for epoch in tqdm(range(1, self.config.epoches+1), desc="Epochs", position=0, disable=not self.accelerator.is_main_process):
             
@@ -137,7 +138,8 @@ class Trainer:
             self.training_step(epoch=epoch, training_data=training_data, training_kwargs=training_kwargs)
 
             if self.config.eval_freq > 0 and epoch % self.config.eval_freq == 0:
-                self.evaluation_step(epoch=epoch)
+                self.evaluation_step(epoch=epoch, noisy=False)
+                self.evaluation_step(epoch=epoch, noisy=True)
 
         self.accelerator.end_training()
 
@@ -258,7 +260,7 @@ class Trainer:
                     self.optimizer.zero_grad()
 
     @torch.no_grad()
-    def evaluation_step(self, epoch):
+    def evaluation_step(self, epoch, noisy=False):
         
         self.flow_model.eval()
         all_objective_values = []
@@ -269,11 +271,19 @@ class Trainer:
             batch_size = len(data_ids)
             eval_noise = torch.load("eval_noise/struct_tensor.pt", map_location=self.device)[:, data_ids, :]
 
-            sparse_structure_sampler_params = {
-                "steps": self.config.num_inference_steps,
-                "noise_level": 0.0,
-                "prior_noise": eval_noise[0],
-            }
+            if noisy:
+                sparse_structure_sampler_params = {
+                    "steps": self.config.num_inference_steps,
+                    "noise_level": 0.7,
+                    "prior_noise": eval_noise[0],
+                    "intermediate_noise": eval_noise[1:],
+                }
+            else:
+                sparse_structure_sampler_params = {
+                    "steps": self.config.num_inference_steps,
+                    "noise_level": 0.0,
+                    "prior_noise": eval_noise[0],
+                }
             cond = self.pipeline.get_cond([self.prompt]*batch_size)         
             coords = self.pipeline.sample_sparse_structure(cond, batch_size, sparse_structure_sampler_params)
             slats = self.pipeline.sample_slat(cond, coords)
@@ -290,10 +300,11 @@ class Trainer:
 
         all_objective_values = torch.cat(all_objective_values, dim=0)
 
-        self.log_meshes(all_meshes, all_slats, all_objective_values, epoch, stage="eval")
-        self.log_objective_metrics(all_objective_values, step=epoch, stage="eval")
-        self.accelerator.wait_for_everyone()
+        stage = "eval_noisy" if noisy else "eval"
 
+        self.log_meshes(all_meshes, all_slats, all_objective_values, epoch, stage=stage)
+        self.log_objective_metrics(all_objective_values, step=epoch, stage=stage)
+        self.accelerator.wait_for_everyone()
 
     def log_meshes(
         self,
@@ -323,9 +334,9 @@ class Trainer:
                 pickle.dump(slat.cpu(), f)
 
         views = {
-            "front": {"yaw_deg": 0, "pitch_deg": 10},
+            "front": {"yaw_deg": 180, "pitch_deg": 10},
             "side": {"yaw_deg": 90, "pitch_deg": 10},
-            "angle": {"yaw_deg": 45, "pitch_deg": 20},
+            "angle": {"yaw_deg": 135, "pitch_deg": 20},
         }
         wandb_images = defaultdict(list)
 
@@ -353,6 +364,7 @@ class Trainer:
         prefix = {
             "train": "",
             "eval": "eval_",
+            "eval_noisy": "eval_noisy_",
         }
         metrics = {
             prefix[stage] + "objective_values_mean": gathered_objective_values.mean().item(),
@@ -366,7 +378,7 @@ class Trainer:
                             mesh,
                             yaw_deg=30.0,
                             pitch_deg=20.0,
-                            r=5.0,
+                            r=4.0,
                             fov_deg=60.0,
                             base_color=(1.0, 1.0, 1.0, 1.0),
                             bg_color=(1.0, 1.0, 1.0, 1.0)) -> Image.Image:
@@ -401,6 +413,13 @@ class Trainer:
         # ---- Renderer & scene ----
         scene = self.renderer.scene
         scene.clear_geometry()
+        scene.set_background(bg_color)
+        scene.scene.set_sun_light(
+            direction=[0.577, -0.577, -0.577], 
+            color=[1.0, 1.0, 1.0],             
+            intensity=100000                   
+        )
+        scene.scene.enable_sun_light(True)
 
         # Material
         mat = o3d.visualization.rendering.MaterialRecord()
