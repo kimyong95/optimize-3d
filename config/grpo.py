@@ -33,4 +33,6 @@ def get_config():
     config.kl_beta = 0.01
     config.max_grad_norm = 1.0
 
+    config.reward_server_port = 8000
+
     return config

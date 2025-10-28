@@ -19,4 +19,6 @@ def get_config():
     config.total_num_samples = 16
     config.batch_size = 4 # number of samples for gradient estimation, it is equal to q in the paper
 
+    config.reward_server_port = 8000
+
     return config

@@ -21,4 +21,6 @@ def get_config():
     config.final_batch_size = 16     # b_1 in the paper
     config.evaluation_budget = 76    # C in the paper
 
+    config.reward_server_port = 8000
+
     return config

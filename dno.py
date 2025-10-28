@@ -141,7 +141,6 @@ class Trainer:
         self.accelerator = Accelerator(log_with="wandb", mixed_precision="bf16")
         self.accelerator.init_trackers(
             project_name="optimize-3d",
-            config=config.to_dict(),
             init_kwargs={"wandb": {"name": config.run_name, "config": config.to_dict()}}
         )
 
@@ -152,7 +151,7 @@ class Trainer:
         self.pipeline.sample_sparse_structure = self.sample_sparse_structure_dno.__get__(self.pipeline) # replace the original method
         self.pipeline.to(self.device)
         
-        self.objective_evaluator = ObjectiveEvaluator(objective=config.objective)
+        self.objective_evaluator = ObjectiveEvaluator(objective=config.objective, port=config.reward_server_port)
         self.ref_mesh = trimesh.load(config.ref_mesh_path)
         self.prompt = config.prompt
 
@@ -199,7 +198,7 @@ class Trainer:
         eval_noise = torch.load("eval_noise/struct_tensor.pt", map_location=self.device)
 
         for sample_i in tqdm(range(self.config.total_num_samples), desc="Optimizing samples", disable=not self.accelerator.is_main_process, position=0):
-            
+
             ref_noise = eval_noise[:,sample_i].unsqueeze(1).clone().to(self.device)
             ref_noise = list(ref_noise)
             [x.requires_grad_(True) for x in ref_noise]
@@ -209,69 +208,79 @@ class Trainer:
             slats = []
             objective_values = []
 
-            # +1 because we want to log the ref_images after last noise update
-            for optimization_i in tqdm(range(self.config.optimization_steps+1), desc="Optimization steps", leave=False, disable=not self.accelerator.is_main_process, position=1):
-                
-                # ------------- reference ------------- #
-                sparse_structure_sampler_params = {
-                    "steps": self.config.num_inference_steps,
-                    "noise_level": 0.7,
-                    "prior_noise": ref_noise[0],
-                    "intermediate_noise": ref_noise[1:],
-                }
-                cond = self.pipeline.get_cond([self.prompt])
-                with torch.enable_grad(), self.accelerator.autocast():
-                    ref_coords, ref_xs = self.pipeline.sample_sparse_structure(cond, 1, sparse_structure_sampler_params)
-                ref_meshes, ref_slats = self.generate_meshes_from_coords(cond, ref_coords)
-                ref_objective_value = self.objective_evaluator(ref_meshes)
-                ref_objective_value = torch.tensor(ref_objective_value, device=self.device)
-                
-                # ------------- logging ref ------------ #
-                meshes.append(ref_meshes[0])
-                slats.append(ref_slats[0])
-                objective_values.append(ref_objective_value)
+            try: # try optimize sample_i
 
-                # -------------- perturbed ------------- #
-                noise = einops.repeat(torch.stack(ref_noise).detach(), "T 1 ... -> T B ...", B=self.config.batch_size)
-                noise = noise + torch.randn_like(noise) * 0.01
-                sparse_structure_sampler_params = {
-                    "steps": self.config.num_inference_steps,
-                    "noise_level": 0.7,
-                    "prior_noise": noise[0],
-                    "intermediate_noise": noise[1:],
-                }
-                cond = self.pipeline.get_cond([self.prompt]*self.config.batch_size)
-                perturbed_coords, perturbed_xs = self.pipeline.sample_sparse_structure(cond, self.config.batch_size, sparse_structure_sampler_params)
-                perturbed_meshes, perturbed_slats = self.generate_meshes_from_coords(cond, perturbed_coords)
-                perturbed_objective_values = self.objective_evaluator(perturbed_meshes)
-                perturbed_objective_values = torch.tensor(perturbed_objective_values, device=self.device)
-                
-                # ------------ optimization ------------ #
-                est_grad = torch.zeros_like(ref_xs[0])
-                for i in range(self.config.batch_size):
-                    est_grad += (perturbed_objective_values[i] - ref_objective_value) * (perturbed_xs[i] - ref_xs[0])
-                est_grad /= (torch.norm(est_grad) + 1e-3)
-                with torch.enable_grad():
-                    loss = torch.sum(est_grad * ref_xs[0])
-                    self.accelerator.backward(loss)
-                    self.accelerator.clip_grad_norm_(ref_noise, 1.0)
-                optimizer.step()
-                optimizer.zero_grad()
+                # +1 because we want to log the ref_images after last noise update
+                for optimization_i in tqdm(range(self.config.optimization_steps+1), desc="Optimization steps", leave=False, disable=not self.accelerator.is_main_process, position=1):
+                    
+                    # ------------- reference ------------- #
+                    sparse_structure_sampler_params = {
+                        "steps": self.config.num_inference_steps,
+                        "noise_level": 0.7,
+                        "prior_noise": ref_noise[0],
+                        "intermediate_noise": ref_noise[1:],
+                    }
+                    cond = self.pipeline.get_cond([self.prompt])
+                    with torch.enable_grad(), self.accelerator.autocast():
+                        ref_coords, ref_xs = self.pipeline.sample_sparse_structure(cond, 1, sparse_structure_sampler_params)
+                    ref_meshes, ref_slats = self.generate_meshes_from_coords(cond, ref_coords)
+                    ref_objective_value = self.objective_evaluator(ref_meshes)
+                    ref_objective_value = torch.tensor(ref_objective_value, device=self.device)
+                    
+                    # ------------- logging ref ------------ #
+                    meshes.append(ref_meshes[0])
+                    slats.append(ref_slats[0])
+                    objective_values.append(ref_objective_value)
 
-            all_meshes.append(meshes)
-            all_slats.append(slats)
-            all_objective_values.append(objective_values)
+                    # -------------- perturbed ------------- #
+                    noise = einops.repeat(torch.stack(ref_noise).detach(), "T 1 ... -> T B ...", B=self.config.batch_size)
+                    noise = noise + torch.randn_like(noise) * 0.01
+                    sparse_structure_sampler_params = {
+                        "steps": self.config.num_inference_steps,
+                        "noise_level": 0.7,
+                        "prior_noise": noise[0],
+                        "intermediate_noise": noise[1:],
+                    }
+                    cond = self.pipeline.get_cond([self.prompt]*self.config.batch_size)
+                    perturbed_coords, perturbed_xs = self.pipeline.sample_sparse_structure(cond, self.config.batch_size, sparse_structure_sampler_params)
+                    perturbed_meshes, perturbed_slats = self.generate_meshes_from_coords(cond, perturbed_coords)
+                    perturbed_objective_values = self.objective_evaluator(perturbed_meshes)
+                    perturbed_objective_values = torch.tensor(perturbed_objective_values, device=self.device)
+                    
+                    # ------------ optimization ------------ #
+                    est_grad = torch.zeros_like(ref_xs[0])
+                    for i in range(self.config.batch_size):
+                        est_grad += (perturbed_objective_values[i] - ref_objective_value) * (perturbed_xs[i] - ref_xs[0])
+                    est_grad /= (torch.norm(est_grad) + 1e-3)
+                    with torch.enable_grad():
+                        loss = torch.sum(est_grad * ref_xs[0])
+                        self.accelerator.backward(loss)
+                        self.accelerator.clip_grad_norm_(ref_noise, 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+            except Exception as e: # fail to optimize sample_i
+                print(f"Sample {sample_i} failed at optimization step {optimization_i} with error: {e}")
+            
+            else: # successfully optimize sample_i
+                all_meshes.append(meshes)
+                all_slats.append(slats)
+                all_objective_values.append(objective_values)
+            
+                # flip: (B, optimization_steps+1) -> (optimization_steps+1, B)
+                all_steps_objective_values = list(map(list, zip(*all_objective_values)))
+                all_steps_meshes = list(map(list, zip(*all_meshes)))
+                all_steps_slats = list(map(list, zip(*all_slats)))
+
+                # log trajectory objective values
+                for i in range(self.config.optimization_steps+1):
+                    objective_values_i = torch.stack(all_steps_objective_values[i])[:,0]
+                    self.log_objective_metrics(objective_values_i, step=i)
+                    self.log_meshes(all_steps_meshes[i],all_steps_slats[i],objective_values_i,step=i)
+
+        self.accelerator.log({"successful_samples": len(all_meshes)})
+        self.accelerator.log({"failed_samples": self.config.total_num_samples - len(all_meshes)})
         
-            # flip: (B, optimization_steps+1) -> (optimization_steps+1, B)
-            all_steps_objective_values = list(map(list, zip(*all_objective_values)))
-            all_steps_meshes = list(map(list, zip(*all_meshes)))
-            all_steps_slats = list(map(list, zip(*all_slats)))
-
-            # log trajectory objective values
-            for i in range(self.config.optimization_steps+1):
-                objective_values_i = torch.stack(all_steps_objective_values[i])[:,0]
-                self.log_objective_metrics(objective_values_i, step=i)
-                self.log_meshes(all_steps_meshes[i],all_steps_slats[i],objective_values_i,step=i)
 
     def generate_meshes_from_coords(self, cond, coords):
         slats = self.pipeline.sample_slat(cond, coords)

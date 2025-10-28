@@ -114,7 +114,7 @@ class Trainer:
         self.pipeline = TrellisTextTo3DPipeline.from_pretrained("microsoft/TRELLIS-text-xlarge")
         self.pipeline.to(self.device)
         
-        self.objective_evaluator = ObjectiveEvaluator(objective=config.objective)
+        self.objective_evaluator = ObjectiveEvaluator(objective=config.objective, port=config.reward_server_port)
         self.ref_mesh = trimesh.load(config.ref_mesh_path)
         self.prompt = config.prompt
 

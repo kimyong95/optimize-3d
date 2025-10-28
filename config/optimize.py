@@ -18,4 +18,6 @@ def get_config():
     config.ref_mesh_path = "drag-force/assets/sample.stl"
     config.objective = "drag-coefficient"
 
+    config.reward_server_port = 8000
+
     return config

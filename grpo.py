@@ -56,7 +56,6 @@ class Trainer:
         self.accelerator = Accelerator(log_with="wandb", mixed_precision="bf16")
         self.accelerator.init_trackers(
             project_name="optimize-3d",
-            config=config.to_dict(),
             init_kwargs={"wandb": {"name": config.run_name, "config": config.to_dict()}}
         )
 
@@ -94,7 +93,7 @@ class Trainer:
         
         self.flow_model, self.optimizer, self.train_dataloader, self.eval_dataloader = self.accelerator.prepare(self.flow_model, self.optimizer, train_dataloader, eval_dataloader)
 
-        self.objective_evaluator = ObjectiveEvaluator(objective=config.objective)
+        self.objective_evaluator = ObjectiveEvaluator(objective=config.objective, port=config.reward_server_port)
         self.ref_mesh = trimesh.load(config.ref_mesh_path)
         self.prompt = config.prompt
 
@@ -129,8 +128,9 @@ class Trainer:
 
     def run(self):
         if self.config.eval_freq > 0:
-            self.evaluation_step(epoch=0, noisy=False)
             self.evaluation_step(epoch=0, noisy=True)
+            self.evaluation_step(epoch=0, noisy=False)
+            
         
         for epoch in tqdm(range(1, self.config.epoches+1), desc="Epochs", position=0, disable=not self.accelerator.is_main_process):
             
@@ -138,8 +138,9 @@ class Trainer:
             self.training_step(epoch=epoch, training_data=training_data, training_kwargs=training_kwargs)
 
             if self.config.eval_freq > 0 and epoch % self.config.eval_freq == 0:
-                self.evaluation_step(epoch=epoch, noisy=False)
                 self.evaluation_step(epoch=epoch, noisy=True)
+                self.evaluation_step(epoch=epoch, noisy=False)
+                
 
         self.accelerator.end_training()
 
@@ -284,7 +285,7 @@ class Trainer:
                     "noise_level": 0.0,
                     "prior_noise": eval_noise[0],
                 }
-            cond = self.pipeline.get_cond([self.prompt]*batch_size)         
+            cond = self.pipeline.get_cond([self.prompt]*batch_size)
             coords = self.pipeline.sample_sparse_structure(cond, batch_size, sparse_structure_sampler_params)
             slats = self.pipeline.sample_slat(cond, coords)
 
