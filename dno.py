@@ -278,6 +278,9 @@ class Trainer:
                     self.log_objective_metrics(objective_values_i, step=i)
                     self.log_meshes(all_steps_meshes[i],all_steps_slats[i],objective_values_i,step=i)
 
+            torch.cuda.empty_cache()
+
+
         self.accelerator.log({"successful_samples": len(all_meshes)})
         self.accelerator.log({"failed_samples": self.config.total_num_samples - len(all_meshes)})
         
