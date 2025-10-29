@@ -110,8 +110,6 @@ class ObjectiveEvaluator:
         
         if self.objective == "volume":
             return mesh.volume
-        elif self.objective == "bound-volume":
-            return mesh.extents.prod()
 
         with tempfile.NamedTemporaryFile(mode='wb+', delete=True, suffix='.stl') as f:
             mesh.export(f.name)
@@ -129,8 +127,8 @@ class ObjectiveEvaluator:
             frontal_area = self.frontal_area(mesh)
             drag_coefficient = self.force_to_coefficient(drag_force, frontal_area)
             objective_value = drag_coefficient
-        elif self.objective == "lift-force":
-            objective_value = output_dict["lift_force"]
+        elif self.objective == "drag-lift-force": # minimize sum of drag and lift forces
+            objective_value = output_dict["drag_force"] + output_dict["lift_force"]
         else:
             raise ValueError(f"Unknown objective: {self.objective}")
         
