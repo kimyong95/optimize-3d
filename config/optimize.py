@@ -20,4 +20,6 @@ def get_config():
 
     config.reward_server_port = 8000
 
+    config.lr = 1.0
+
     return config

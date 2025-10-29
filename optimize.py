@@ -28,7 +28,7 @@ FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/optimize.py", "Training configuration.")
 
 
-def update_parameters(mu, sigma, noise, objective_values):
+def update_parameters(mu, sigma, noise, objective_values, lr=1.0):
     ''' minimize score '''
 
     # noise: (T, B, D)
@@ -44,8 +44,8 @@ def update_parameters(mu, sigma, noise, objective_values):
     mu = mu.clone()
     sigma = sigma.clone()
 
-    lr_mu = 1
-    lr_sigma = 1 / math.sqrt(D_dim)
+    lr_mu = lr
+    lr_sigma = lr / math.sqrt(D_dim)
 
     for t in range(T_dim):
         
@@ -192,7 +192,7 @@ class Trainer:
             for t in range(self.config.num_inference_steps - 1):
                 y, _ = self.value_model.predict(gathered_pred_data_trajectory[t])
                 all_objective_values[t] = y
-            self.mu, self.sigma = update_parameters(self.mu, self.sigma, gathered_noise, all_objective_values)
+            self.mu, self.sigma = update_parameters(self.mu, self.sigma, gathered_noise, all_objective_values, lr=self.config.lr)
         self.mu = accelerate.utils.broadcast(self.mu)
         self.sigma = accelerate.utils.broadcast(self.sigma)
 
