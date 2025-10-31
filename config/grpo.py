@@ -30,7 +30,7 @@ def get_config():
 
     config.clip_range = 0.1
     config.adv_clip_max = 5.0
-    config.kl_beta = 0.01
+    config.kl_beta = 0.04
     config.max_grad_norm = 1.0
 
     config.reward_server_port = 8000

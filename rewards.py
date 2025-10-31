@@ -31,8 +31,6 @@ def retry(times, failed_return, exceptions, backoff_factor=1):
                     )
                     time.sleep(backoff_factor * 2**attempt)
                     attempt += 1
-            with open(f"failed_{uuid.uuid4()}.pkl", "wb") as f:
-                pickle.dump((args, kwargs), f)
             return failed_return
         return wrapper
     return decorator
