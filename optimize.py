@@ -16,6 +16,7 @@ import wandb
 from absl import app, flags
 from accelerate import Accelerator
 from accelerate.utils import set_seed
+from torch.utils.data import DataLoader
 from ml_collections import config_flags
 from PIL import Image
 from rewards import ObjectiveEvaluator
@@ -123,6 +124,12 @@ class Trainer:
         self.value_model = ValueModel(dimension=self.structure_dimension)
         self.value_model.to(self.device)
 
+        self.batch_size_per_device = min(config.max_batch_size_per_device, config.total_num_samples // self.accelerator.num_processes)
+
+        # assume train and eval use the same total number of samples and batch size
+        self.dataloader = DataLoader(range(config.total_num_samples), batch_size=self.batch_size_per_device)
+        self.dataloader = self.accelerator.prepare(self.dataloader)
+
         self._init_renderer()
 
         self._log_code()
@@ -163,26 +170,33 @@ class Trainer:
                 self.evaluate(step)
 
     def train_step(self, step: int) -> None:
-        noise, noise_projected = get_noise(self.mu, self.sigma, self.config.batch_size, self.device)
 
-        meshes, slats, pred_data_trajectory = self.generate(intermediate_noise=noise_projected)
-        objective_values = self.objective_evaluator(meshes)
-        objective_values = torch.from_numpy(objective_values).to(device=self.device, dtype=torch.float32)
+        all_noise = []
+        all_objective_values = []
+        for batch in self.dataloader:
+            batch_size = batch.shape[0]
 
-        self.accelerator.wait_for_everyone()
-        total_batch_size = self.config.batch_size * self.accelerator.num_processes
-        gathered_objective_values = self.accelerator.gather(objective_values)
-        assert total_batch_size == len(gathered_objective_values)
+            noise, noise_projected = get_noise(self.mu, self.sigma, self.batch_size_per_device, self.device)
+            meshes, slats, pred_data_trajectory = self.generate(batch_size=batch_size, intermediate_noise=noise_projected)
+            objective_values = self.objective_evaluator(meshes)
+            objective_values = torch.from_numpy(objective_values).to(device=self.device, dtype=torch.float32)
+            all_noise.append(noise)
+            all_objective_values.append(objective_values)
 
-        _noise = einops.rearrange(noise, "T B D -> B T D")
-        gathered_noise = einops.rearrange(self.accelerator.gather(_noise), "B T D -> T B D")
+        all_noise = torch.cat(all_noise, dim=1)
+        all_objective_values = torch.cat(all_objective_values, dim=0)
+
+        gathered_objective_values = self.accelerator.gather(all_objective_values)
+        assert self.config.total_num_samples == len(gathered_objective_values)
+
+        gathered_noise = einops.rearrange(self.accelerator.gather(einops.rearrange(all_noise, "T B D -> B T D")), "B T D -> T B D")
 
         _pred_data_trajectory = einops.rearrange(pred_data_trajectory, "T B ... -> B T (...)")
         gathered_pred_data_trajectory = einops.rearrange(self.accelerator.gather(_pred_data_trajectory), "B T D -> T B D")
 
-        all_objective_values = None
+        traj_objective_values = None
         if self.accelerator.is_main_process:
-            all_objective_values = torch.zeros((self.config.num_inference_steps, total_batch_size), device=self.device,)
+            traj_objective_values = torch.zeros((self.config.num_inference_steps, self.config.total_num_samples), device=self.device,)
             
             self.value_model.add_model_data(
                 x = gathered_pred_data_trajectory[-1],
@@ -191,44 +205,58 @@ class Trainer:
 
             for t in range(self.config.num_inference_steps - 1):
                 y, _ = self.value_model.predict(gathered_pred_data_trajectory[t])
-                all_objective_values[t] = y
-            self.mu, self.sigma = update_parameters(self.mu, self.sigma, gathered_noise, all_objective_values, lr=self.config.lr)
+                traj_objective_values[t] = y
+            self.mu, self.sigma = update_parameters(self.mu, self.sigma, gathered_noise, traj_objective_values, lr=self.config.lr)
         self.mu = accelerate.utils.broadcast(self.mu)
         self.sigma = accelerate.utils.broadcast(self.sigma)
 
-        self.log_objective_metrics(objective_values,step=step,stage="train")
+        self.log_objective_metrics(gathered_objective_values,step=step,stage="train")
 
     def evaluate(self, step: int) -> None:
-        prompts_idx = self.config.batch_size * self.accelerator.process_index + torch.arange(
-            self.config.batch_size, device=self.device
-        )
-        eval_noise = torch.load("eval_noise/struct_tensor.pt", map_location=self.device)[:, prompts_idx, :]
+        eval_noise = torch.load("eval_noise/struct_tensor.pt", map_location=self.device)
         prior_noise = eval_noise[0]
         intermidiate_noise = eval_noise[1:]
 
-        _, noise_projected = get_noise(
-            self.mu,
-            self.sigma,
-            self.config.batch_size,
-            self.device,
-            base_noise=intermidiate_noise,
-        )
+        all_meshes = []
+        all_slats = []
+        all_objective_values = []
+        for batch in self.dataloader:
+            batch_size = batch.shape[0]
 
-        meshes, slats, _ = self.generate(
-            prior_noise=prior_noise,
-            intermediate_noise=noise_projected,
-        )
+            _, noise_projected = get_noise(
+                self.mu,
+                self.sigma,
+                batch_size,
+                self.device,
+                base_noise=intermidiate_noise[:, batch, :],
+            )
 
-        objective_values = self.objective_evaluator(meshes)
-        objective_values = torch.from_numpy(objective_values).to(self.device)
-        self.log_meshes(meshes, slats, objective_values, step, stage="eval")
+            meshes, slats, _ = self.generate(
+                batch_size=batch_size,
+                prior_noise=prior_noise[batch],
+                intermediate_noise=noise_projected,
+            )
 
-        self.log_objective_metrics(objective_values, step=step, stage="eval")
+            objective_values = self.objective_evaluator(meshes)
+            objective_values = torch.from_numpy(objective_values).to(self.device)
+
+            all_meshes.extend(meshes)
+            all_slats.extend(slats)
+            all_objective_values.append(objective_values)
+        all_objective_values = torch.cat(all_objective_values, dim=0)
+        gather_meshes = self.accelerator.gather_for_metrics(meshes)
+        gather_slats = self.accelerator.gather_for_metrics(slats)
+        gathered_objective_values = self.accelerator.gather(all_objective_values)
+
+        self.log_meshes(gather_meshes, gather_slats, gathered_objective_values, step, stage="eval")
+        self.log_objective_metrics(gathered_objective_values, step=step, stage="eval")
         self.save_parameters(step)
+        self.accelerator.wait_for_everyone()
 
     @torch.inference_mode()
     def generate(
         self,
+        batch_size: int,
         prior_noise: Optional[torch.Tensor] = None,
         intermediate_noise: torch.Tensor = None,
     ) -> Tuple[List[trimesh.Trimesh], List[torch.Tensor]]:
@@ -240,21 +268,20 @@ class Trainer:
 
         sparse_structure_sampler_params = {
             "steps": self.config.num_inference_steps,
-            "noise_level": 0.7,
+            "noise_level": self.config.noise_level,
             **({"prior_noise": prior_noise} if prior_noise is not None else {}),
             "intermediate_noise": intermediate_noise,
         }
 
-        cond = self.pipeline.get_cond([self.prompt]*self.config.batch_size)
+        cond = self.pipeline.get_cond([self.prompt]*batch_size)
         with collect_calls(self.pipeline.sparse_structure_sampler.sample) as collected_data:            
-            coords = self.pipeline.sample_sparse_structure(cond, self.config.batch_size, sparse_structure_sampler_params)
+            coords = self.pipeline.sample_sparse_structure(cond, batch_size, sparse_structure_sampler_params)
         pred_data_trajectory = torch.stack(collected_data[0]["return"]["pred_x_0"][1:] + [collected_data[0]["return"]["samples"]])
 
         slats = self.pipeline.sample_slat(cond, coords)
 
         meshes = [ self.pipeline.decode_slat(slat, ["mesh"])["mesh"][0] for slat in slats ]
         meshes = [ to_trimesh(mesh) for mesh in meshes ]
-        processed_meshes = [ post_process_mesh(mesh) for mesh in meshes ] # TODO: remove later
 
         return meshes, slats, pred_data_trajectory
 
@@ -280,10 +307,6 @@ class Trainer:
         step: int,
         stage: str = "train",
     ) -> None:
-        gather_meshes = self.accelerator.gather_for_metrics(meshes)
-        gather_slats = self.accelerator.gather_for_metrics(slats)
-        gather_objective_values = self.accelerator.gather(objective_values)
-        self.accelerator.wait_for_everyone()
 
         if not self.accelerator.is_main_process:
             return
@@ -294,7 +317,7 @@ class Trainer:
         slat_dir = f"{wandb_dir}/slats/{stage}/{step:03d}"
         os.makedirs(mesh_dir, exist_ok=True)
         os.makedirs(slat_dir, exist_ok=True)
-        for i, (mesh, slat) in enumerate(zip(gather_meshes, gather_slats)):
+        for i, (mesh, slat) in enumerate(zip(meshes, slats)):
             mesh.export(f"{mesh_dir}/{i:02d}.glb")
             with open(f"{slat_dir}/{i:02d}.pkl", "wb") as f:
                 pickle.dump(slat.cpu(), f)
@@ -307,7 +330,7 @@ class Trainer:
         wandb_images = defaultdict(list)
 
         for view_name, view_param in views.items():
-            for idx, (mesh, objective_value) in enumerate(zip(gather_meshes, gather_objective_values)):
+            for idx, (mesh, objective_value) in enumerate(zip(meshes, objective_values)):
                 wandb_image = wandb.Image(
                     self.render_photo_open3d(mesh, **view_param),
                     caption=f"i={idx},f={objective_value:.4f}",
@@ -324,18 +347,15 @@ class Trainer:
         step: int,
         stage: str,
     ) -> None:
-        gathered_objective_values = self.accelerator.gather(objective_values)
-        self.accelerator.wait_for_everyone()
 
         prefix = {
             "train": "",
             "eval": "eval_",
         }
-        total_batch_size = self.config.batch_size * self.accelerator.num_processes
         metrics = {
-            prefix[stage] + "objective_values_mean": gathered_objective_values.mean().item(),
-            prefix[stage] + "objective_values_std": gathered_objective_values.std().item(),
-            "objective_evaluations": total_batch_size * step,
+            prefix[stage] + "objective_values_mean": objective_values.mean().item(),
+            prefix[stage] + "objective_values_std": objective_values.std().item(),
+            "objective_evaluations": self.config.total_num_samples * step,
             "mu_norm": self.mu.norm().item(),
         }
 

@@ -9,9 +9,11 @@ def get_config():
     config.optimization_steps = 100
     config.num_inference_steps = 25
     config.guidance_scale = 7.0
+    config.noise_level = 0.7
 
     config.run_name = "optimize-3d"
-    config.batch_size = 16
+    config.total_num_samples = 16
+    config.max_batch_size_per_device = 16
     
     config.eval_freq = 10
     
