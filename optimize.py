@@ -282,6 +282,7 @@ class Trainer:
 
         meshes = [ self.pipeline.decode_slat(slat, ["mesh"])["mesh"][0] for slat in slats ]
         meshes = [ to_trimesh(mesh) for mesh in meshes ]
+        meshes = [ post_process_mesh(mesh) for mesh in meshes ]
 
         return meshes, slats, pred_data_trajectory
 
