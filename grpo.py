@@ -77,8 +77,7 @@ class Trainer:
             target_modules=target_modules,
         )
         self.pipeline.models['sparse_structure_flow_model'] = get_peft_model(self.pipeline.models['sparse_structure_flow_model'], lora_config)
-        self.flow_model = self.pipeline.models['sparse_structure_flow_model']
-        trainable_parameters = list(filter(lambda p: p.requires_grad, self.flow_model.parameters()))
+        trainable_parameters = list(filter(lambda p: p.requires_grad, self.pipeline.models['sparse_structure_flow_model'].parameters()))
         self.optimizer = torch.optim.AdamW(trainable_parameters,lr=self.config.learning_rate,)
 
         # to handle if the sampling_max_batch_size_per_device * num_processes > training_samples_per_epoch
@@ -91,7 +90,7 @@ class Trainer:
 
         self.accelerator.gradient_accumulation_steps = self.config.num_inference_steps * (self.config.training_effective_batch_size // (self.config.training_max_batch_size_per_device * self.accelerator.num_processes))
         
-        self.flow_model, self.optimizer, self.train_dataloader, self.eval_dataloader = self.accelerator.prepare(self.flow_model, self.optimizer, train_dataloader, eval_dataloader)
+        self.pipeline.models['sparse_structure_flow_model'], self.optimizer, self.train_dataloader, self.eval_dataloader = self.accelerator.prepare(self.pipeline.models['sparse_structure_flow_model'], self.optimizer, train_dataloader, eval_dataloader)
 
         self.objective_evaluator = ObjectiveEvaluator(objective=config.objective, port=config.reward_server_port)
         self.ref_mesh = trimesh.load(config.ref_mesh_path)
@@ -146,7 +145,7 @@ class Trainer:
 
     @torch.no_grad()
     def sampling_step(self, epoch):
-        self.flow_model.eval()
+        self.pipeline.models['sparse_structure_flow_model'].eval()
         training_data = []
         training_kwargs = []
         all_meshes = []
@@ -209,7 +208,7 @@ class Trainer:
         return training_data, training_kwargs
 
     def training_step(self, epoch, training_data, training_kwargs):
-        self.flow_model.train()
+        self.pipeline.models['sparse_structure_flow_model'].train()
 
         training_batches = list(batches_dict(training_data, self.config.training_max_batch_size_per_device))
         
@@ -218,17 +217,17 @@ class Trainer:
             batch_size = len(training_batch["sample"])
 
             for i in tqdm(range(self.config.num_inference_steps), desc="Timesteps", position=2, leave=False, disable=not self.accelerator.is_main_process):
-                with self.accelerator.accumulate(self.flow_model):
+                with self.accelerator.accumulate(self.pipeline.models['sparse_structure_flow_model']):
 
                     training_kwargs_i = training_kwargs[i]
                     t = training_kwargs_i["t"]
                     t_prev = training_kwargs_i["t_prev"]
 
                     with torch.enable_grad(), self.accelerator.autocast():
-                        prev_sample_mean = self.pipeline.sparse_structure_sampler.sample_once(self.flow_model, training_batch["sample"][:,i], cond=training_batch["cond"][:,i], noise_level=0.7, **training_kwargs_i).pred_x_prev_mean
+                        prev_sample_mean = self.pipeline.sparse_structure_sampler.sample_once(self.pipeline.models['sparse_structure_flow_model'], training_batch["sample"][:,i], cond=training_batch["cond"][:,i], noise_level=0.7, **training_kwargs_i).pred_x_prev_mean
                         
-                    with self.accelerator.unwrap_model(self.flow_model).disable_adapter(), torch.no_grad(), self.accelerator.autocast():
-                        prev_sample_mean_ref = self.pipeline.sparse_structure_sampler.sample_once(self.flow_model, training_batch["sample"][:,i], cond=training_batch["cond"][:,i], noise_level=0.7, **training_kwargs_i).pred_x_prev_mean
+                    with self.accelerator.unwrap_model(self.pipeline.models['sparse_structure_flow_model']).disable_adapter(), torch.no_grad(), self.accelerator.autocast():
+                        prev_sample_mean_ref = self.pipeline.sparse_structure_sampler.sample_once(self.pipeline.models['sparse_structure_flow_model'], training_batch["sample"][:,i], cond=training_batch["cond"][:,i], noise_level=0.7, **training_kwargs_i).pred_x_prev_mean
 
                     curr_log_prob = self.pipeline.sparse_structure_sampler.calculate_log_prob(pred_x_prev_mean=prev_sample_mean, pred_x_prev=training_batch["prev_sample"][:,i], t=t, t_prev=t_prev, noise_level=0.7)
 
@@ -256,14 +255,14 @@ class Trainer:
 
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(self.flow_model.parameters(), self.config.max_grad_norm)
+                        self.accelerator.clip_grad_norm_(self.pipeline.models['sparse_structure_flow_model'].parameters(), self.config.max_grad_norm)
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
     @torch.no_grad()
     def evaluation_step(self, epoch, noisy=False):
         
-        self.flow_model.eval()
+        self.pipeline.models['sparse_structure_flow_model'].eval()
         all_objective_values = []
         all_meshes = []
         all_slats = []
