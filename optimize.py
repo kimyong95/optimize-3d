@@ -170,7 +170,7 @@ class Trainer(BaseTrainer):
         self.log_objective_metrics(gathered_objective_values, objective_evaluations=self.config.total_num_samples * step, stage="train")
 
     def evaluate(self, step: int) -> None:
-        eval_noise = torch.load("eval_noise/struct_tensor.pt", map_location=self.device)
+        eval_noise = torch.load("eval-noise/struct-tensor.pt", map_location=self.device)
         prior_noise = eval_noise[0]
         intermidiate_noise = eval_noise[1:]
 

@@ -155,5 +155,7 @@ class Trainer(BaseTrainer):
         return edict({"pred_x_prev": x_prev, "pred_x_0": pred_x_0})
 
 
-
-
+if __name__ == "__main__":
+    FLAGS(sys.argv)
+    trainer = Trainer(FLAGS.config)
+    trainer.run()

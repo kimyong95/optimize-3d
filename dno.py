@@ -105,7 +105,7 @@ class Trainer(BaseTrainer):
         all_meshes = []
         all_slats = []
         all_objective_values = []
-        eval_noise = torch.load("eval_noise/struct_tensor.pt", map_location=self.device)
+        eval_noise = torch.load("eval-noise/struct-tensor.pt", map_location=self.device)
 
         for sample_i in tqdm(range(self.config.total_num_samples), desc="Optimizing samples", disable=not self.accelerator.is_main_process, position=0):
 

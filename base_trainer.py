@@ -190,7 +190,7 @@ class BaseTrainer:
                     caption=f"i={idx},f={objective_value:.4f}",
                     file_type="jpeg",
                 )
-                wandb_images[f"{stage}/{view_name}_images"].append(wandb_image)
+                wandb_images[f"{stage}/{view_name}-images"].append(wandb_image)
             
         wandb_tracker = self.accelerator.get_tracker("wandb")
         wandb_tracker.log(wandb_images, step=step)
@@ -214,8 +214,8 @@ class BaseTrainer:
         self.accelerator.wait_for_everyone()
 
         metrics = {
-            f"{stage}/objective_values_mean": gathered_objective_values.mean().item(),
-            "objective_evaluations": objective_evaluations,
+            f"{stage}/objective-values-mean": gathered_objective_values.mean().item(),
+            "objective-evaluations": objective_evaluations,
         }
 
         self.accelerator.log(metrics)

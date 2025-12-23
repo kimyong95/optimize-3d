@@ -119,7 +119,7 @@ class Trainer(BaseTrainer):
             try:
                 pred_sample_i = self.sample_once_original(model, x_prev_i, t_prev, t_seq[t_prev_prev_idx], cond, noise_level=0.0, **kwargs).pred_x_0 if t_prev_prev_idx < len(t_seq) else x_prev_i
                 coords = torch.argwhere(external_self.pipeline.models['sparse_structure_decoder'](pred_sample_i)>0)[:, [0, 2, 3, 4]].int()
-                cond_dict = external_self.pipeline.get_cond([external_self.prompt]*batch_size)
+                cond_dict = external_self.pipeline.get_cond([external_self.prompt]*external_self.config.expansion_size)
                 meshes, slats = external_self.generate_meshes_from_coords(cond_dict, coords)
                 objective_values = external_self.objective_evaluator(meshes)
                 objective_values = torch.from_numpy(objective_values).to(x_t.device)

@@ -251,7 +251,7 @@ class Trainer(BaseTrainer):
         for data_ids in tqdm(self.eval_dataloader, desc="Evaluation", position=1, leave=False, disable=not self.accelerator.is_main_process):
             
             batch_size = len(data_ids)
-            eval_noise = torch.load("eval_noise/struct_tensor.pt", map_location=self.device)[:, data_ids, :]
+            eval_noise = torch.load("eval-noise/struct-tensor.pt", map_location=self.device)[:, data_ids, :]
 
             sparse_structure_sampler_params = {
                 "steps": self.config.num_inference_steps,
