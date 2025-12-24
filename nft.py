@@ -209,10 +209,10 @@ class Trainer(BaseTrainer):
                     with torch.no_grad(), use_adapter(self.accelerator.unwrap_model(self.pipeline.models['sparse_structure_flow_model']), "old"):
                         old_flow_pred = self.pipeline.models['sparse_structure_flow_model'](xt, t.expand(xt.shape[0]), cond)
 
-                    with torch.enable_grad(), self.accelerator.autocast():
+                    with torch.enable_grad():
                         curr_flow_pred = self.pipeline.models['sparse_structure_flow_model'](xt, t.expand(xt.shape[0]), cond)
                     
-                    with self.accelerator.unwrap_model(self.pipeline.models['sparse_structure_flow_model']).disable_adapter(), torch.no_grad(), self.accelerator.autocast():
+                    with self.accelerator.unwrap_model(self.pipeline.models['sparse_structure_flow_model']).disable_adapter(), torch.no_grad():
                         ref_flow_pred = self.pipeline.models['sparse_structure_flow_model'](xt, t.expand(xt.shape[0]), cond)
 
                     advantages = torch.clamp(training_batch["advantages"],-self.config.adv_clip_max,self.config.adv_clip_max)
@@ -274,8 +274,9 @@ class Trainer(BaseTrainer):
 
         all_objective_values = torch.cat(all_objective_values, dim=0)
 
-        self.log_meshes(all_meshes, all_slats, all_objective_values, step=epoch, stage="eval")
-        self.log_objective_metrics(all_objective_values, objective_evaluations=self.config.training_samples_per_epoch * epoch, stage="eval")
+        objective_evaluations = self.config.training_samples_per_epoch * epoch
+        self.log_meshes(all_meshes, all_slats, all_objective_values, objective_evaluations=objective_evaluations, stage="eval")
+        self.log_objective_metrics(all_objective_values, objective_evaluations=objective_evaluations, stage="eval")
         self.accelerator.wait_for_everyone()
 
 

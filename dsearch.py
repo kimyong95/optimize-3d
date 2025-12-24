@@ -68,9 +68,10 @@ class Trainer(BaseTrainer):
 
         objective_values = self.objective_evaluator(meshes)
         objective_values = torch.from_numpy(objective_values).to(self.device)
-        self.log_meshes(meshes, slats, objective_values, step=self.config.num_inference_steps-1, stage="eval")
+        self.log_meshes(meshes, slats, objective_values, objective_evaluations=self.objective_evaluations[-1], stage="final")
 
     @staticmethod
+    @torch.no_grad()
     def sample_once_dsearch(
         self,
         model,
@@ -96,6 +97,7 @@ class Trainer(BaseTrainer):
         t_prev_idx = t_idx + 1
         t_prev_prev_idx = t_idx + 2
         cond_one = cond[0].unsqueeze(0)
+        cond_dict_one = external_self.pipeline.get_cond([external_self.prompt])
         assert torch.allclose(cond, cond_one.expand_as(cond))
 
         # ----------- original code ----------- #
@@ -118,18 +120,15 @@ class Trainer(BaseTrainer):
             x_prev_candidates.append(x_prev_i)
             
             # determinisitcally sample once, decode and evaluate
-            try:
-                cond_expand = einops.repeat(cond_one, "1 ... -> e ...", e=expansion_size)
-                pred_sample_i = self.sample_once_original(model, x_prev_i, t_prev, t_seq[t_prev_prev_idx], cond_expand, noise_level=0.0, **kwargs).pred_x_0 if t_prev_prev_idx < len(t_seq) else x_prev_i
-                coords = torch.argwhere(external_self.pipeline.models['sparse_structure_decoder'](pred_sample_i)>0)[:, [0, 2, 3, 4]].int()
-                cond_dict = external_self.pipeline.get_cond([external_self.prompt]*expansion_size)
-                meshes, slats = external_self.generate_meshes_from_coords(cond_dict, coords)
-                objective_values = external_self.objective_evaluator(meshes)
-                objective_values = torch.from_numpy(objective_values).to(x_t.device)
-            except Exception as e:
-                print(f"Exception {e} when decoding at {t_idx}-th timestep, assign inf objective values")
-                objective_values = torch.full((expansion_size,), float('inf'), device=x_t.device)
-            
+            objective_values = torch.full((expansion_size,), float('inf'), device=x_t.device)
+            for j, x_prev_ij in enumerate(x_prev_i):
+                try:
+                    pred_sample_ij = self.sample_once_original(model, x_prev_ij.unsqueeze(0), t_prev, t_seq[t_prev_prev_idx], cond_one, noise_level=0.0, **kwargs).pred_x_0 if t_prev_prev_idx < len(t_seq) else x_prev_ij.unsqueeze(0)
+                    coords = torch.argwhere(external_self.pipeline.models['sparse_structure_decoder'](pred_sample_ij)>0)[:, [0, 2, 3, 4]].int()
+                    meshes, slats = external_self.generate_meshes_from_coords(cond_dict_one, coords)
+                    objective_values[j] = torch.from_numpy(external_self.objective_evaluator(meshes)).to(x_t.device)
+                except Exception as e:
+                    print(f"Exception {e} when decoding at {t_idx}-th timestep, assign inf objective values")
             x_prev_candidates_obj_values.append(objective_values)
 
         # flatten

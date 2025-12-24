@@ -202,8 +202,8 @@ class Trainer(BaseTrainer):
             all_objective_values.append(objective_values)
         all_objective_values = torch.cat(all_objective_values, dim=0)
         
-        self.log_meshes(all_meshes, all_slats, all_objective_values, step, stage="eval")
-        self.log_objective_metrics(all_objective_values, objective_evaluations=self.config.total_num_samples * step, stage="eval")
+        objective_evaluations = self.config.total_num_samples * step
+        self.log_objective_metrics(all_objective_values, objective_evaluations=objective_evaluations, stage="eval")
         self.save_parameters(step)
         self.accelerator.wait_for_everyone()
 

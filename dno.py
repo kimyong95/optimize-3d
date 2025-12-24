@@ -88,6 +88,10 @@ def disable_gradient_checkpointing(model: nn.Module) -> nn.Module:
 
 class Trainer(BaseTrainer):
     def __init__(self, config):
+
+        num_gpus = torch.cuda.device_count()
+        assert num_gpus == 1, "Only supports single GPU"
+
         super().__init__(config)
 
         [ model[1].requires_grad_(False) for model in self.pipeline.models.items() ] # disable all gradients
@@ -131,7 +135,7 @@ class Trainer(BaseTrainer):
                         "intermediate_noise": ref_noise[1:],
                     }
                     cond = self.pipeline.get_cond([self.prompt])
-                    with torch.enable_grad(), self.accelerator.autocast():
+                    with torch.enable_grad():
                         ref_coords, ref_xs = self.pipeline.sample_sparse_structure(cond, 1, sparse_structure_sampler_params)
                     ref_meshes, ref_slats = self.generate_meshes_from_coords(cond, ref_coords)
                     ref_objective_value = self.objective_evaluator(ref_meshes)
@@ -175,24 +179,24 @@ class Trainer(BaseTrainer):
             else: # successfully optimize sample_i
                 all_meshes.append(meshes)
                 all_slats.append(slats)
-                all_objective_values.append(objective_values)
+                all_objective_values.append(torch.cat(objective_values))
             
             torch.cuda.empty_cache()
 
         # flip: (B, optimization_steps) -> (optimization_steps, B)
-        all_steps_objective_values = list(map(list, zip(*all_objective_values)))
+        all_objective_values = torch.stack(all_objective_values).T
         all_steps_meshes = list(map(list, zip(*all_meshes)))
         all_steps_slats = list(map(list, zip(*all_slats)))
 
         # log trajectory objective values
         for i in range(self.config.optimization_steps):
-            objective_values_i = torch.stack(all_steps_objective_values[i])[:,0]
-            self.log_objective_metrics(objective_values_i, objective_evaluations=self.config.total_num_samples * (self.config.batch_size+1) * i)
+            objective_evaluations = self.config.total_num_samples * (self.config.batch_size + 1) * (i + 1)
+            self.log_objective_metrics(all_objective_values[i], objective_evaluations=objective_evaluations)
             self.log_meshes(
                 all_steps_meshes[i],
                 all_steps_slats[i],
-                objective_values_i,
-                step=i,
+                all_objective_values[i],
+                objective_evaluations=objective_evaluations,
             )
 
         self.accelerator.log({"successful_samples": len(all_meshes)})

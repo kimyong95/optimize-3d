@@ -197,10 +197,10 @@ class Trainer(BaseTrainer):
                     t = training_kwargs_i["t"]
                     t_prev = training_kwargs_i["t_prev"]
 
-                    with torch.enable_grad(), self.accelerator.autocast():
+                    with torch.enable_grad():
                         prev_sample_mean = self.pipeline.sparse_structure_sampler.sample_once(self.pipeline.models['sparse_structure_flow_model'], training_batch["sample"][:,i], cond=training_batch["cond"][:,i], noise_level=0.7, **training_kwargs_i).pred_x_prev_mean
                         
-                    with self.accelerator.unwrap_model(self.pipeline.models['sparse_structure_flow_model']).disable_adapter(), torch.no_grad(), self.accelerator.autocast():
+                    with self.accelerator.unwrap_model(self.pipeline.models['sparse_structure_flow_model']).disable_adapter(), torch.no_grad():
                         prev_sample_mean_ref = self.pipeline.sparse_structure_sampler.sample_once(self.pipeline.models['sparse_structure_flow_model'], training_batch["sample"][:,i], cond=training_batch["cond"][:,i], noise_level=0.7, **training_kwargs_i).pred_x_prev_mean
 
                     curr_log_prob = self.pipeline.sparse_structure_sampler.calculate_log_prob(pred_x_prev_mean=prev_sample_mean, pred_x_prev=training_batch["prev_sample"][:,i], t=t, t_prev=t_prev, noise_level=0.7)
@@ -276,8 +276,9 @@ class Trainer(BaseTrainer):
 
         stage = "eval-noisy" if noisy else "eval"
 
-        self.log_meshes(all_meshes, all_slats, all_objective_values, epoch, stage=stage)
-        self.log_objective_metrics(all_objective_values, objective_evaluations=self.config.training_samples_per_epoch * epoch, stage=stage)
+        objective_evaluations = self.config.training_samples_per_epoch * epoch
+        self.log_meshes(all_meshes, all_slats, all_objective_values, objective_evaluations=objective_evaluations, stage=stage)
+        self.log_objective_metrics(all_objective_values, objective_evaluations=objective_evaluations, stage=stage)
         self.accelerator.wait_for_everyone()
 
 

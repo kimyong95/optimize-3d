@@ -4,7 +4,7 @@ def get_config():
     config = get_base_config()
 
     config.run_name = "dno"
-    
+
     # total objective evaluations: 20*16*(4+1)=1600
     config.optimization_steps = 20
     config.total_num_samples = 16
