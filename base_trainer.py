@@ -19,11 +19,10 @@ from trellis.pipelines import TrellisTextTo3DPipeline
 from utils import to_trimesh, post_process_mesh
 
 class BaseTrainer:
-    def __init__(self, config, accelerator_kwargs: Optional[dict] = {}):
+    def __init__(self,config, accelerator_kwargs: Optional[dict] = {}):
         self.config = config
 
-
-        self.accelerator = Accelerator(log_with="wandb", mixed_precision="fp16", **accelerator_kwargs)
+        self.accelerator = Accelerator(log_with="wandb", **accelerator_kwargs)
         self.accelerator.init_trackers(
             project_name="optimize-3d",
             config=config.to_dict(),
@@ -153,10 +152,10 @@ class BaseTrainer:
         meshes: List[trimesh.Trimesh],
         slats: List[torch.Tensor],
         objective_values: torch.Tensor,
-        step: int,
+        objective_evaluations: int,
         stage: str = "train",
     ) -> None:
-        
+
         gather_meshes = self.accelerator.gather_for_metrics(meshes)
         gather_slats = self.accelerator.gather_for_metrics(slats)
         gather_objective_values = self.accelerator.gather(objective_values)
@@ -167,8 +166,8 @@ class BaseTrainer:
 
         wandb_dir = self.accelerator.get_tracker("wandb").run.dir.removesuffix("/files")
         wandb_dir = os.path.relpath(wandb_dir, os.getcwd())
-        mesh_dir = f"{wandb_dir}/meshes/{stage}/{step:03d}"
-        slat_dir = f"{wandb_dir}/slats/{stage}/{step:03d}"
+        mesh_dir = f"{wandb_dir}/meshes/{stage}/{objective_evaluations:05d}"
+        slat_dir = f"{wandb_dir}/slats/{stage}/{objective_evaluations:05d}"
         os.makedirs(mesh_dir, exist_ok=True)
         os.makedirs(slat_dir, exist_ok=True)
         for i, (mesh, slat) in enumerate(zip(gather_meshes, gather_slats)):
@@ -191,9 +190,9 @@ class BaseTrainer:
                     file_type="jpeg",
                 )
                 wandb_images[f"{stage}/{view_name}-images"].append(wandb_image)
-            
+        wandb_images[f"{stage}/objective-evaluations"] = objective_evaluations
         wandb_tracker = self.accelerator.get_tracker("wandb")
-        wandb_tracker.log(wandb_images, step=step)
+        wandb_tracker.log(wandb_images)
 
     def generate_meshes_from_coords(self, cond, coords):
         slats = self.pipeline.sample_slat(cond, coords)
@@ -208,14 +207,24 @@ class BaseTrainer:
         objective_values: torch.Tensor,
         objective_evaluations: int,
         stage: str = "train",
+        multi_objective_keys: Optional[List[str]] = None,
     ) -> None:
 
         gathered_objective_values = self.accelerator.gather(objective_values)
         self.accelerator.wait_for_everyone()
 
-        metrics = {
-            f"{stage}/objective-values-mean": gathered_objective_values.mean().item(),
-            "objective-evaluations": objective_evaluations,
-        }
+        # single-objective
+        if objective_values.dim() == 1:
+            metrics = {
+                f"{stage}/objective-values-mean": gathered_objective_values.mean().item(),
+                "objective-evaluations": objective_evaluations,
+            }
+        # multi-objective
+        elif objective_values.dim() == 2:
+            assert multi_objective_keys is not None and len(multi_objective_keys) == objective_values.size(1)
+            metrics = {}
+            for i, key in enumerate(multi_objective_keys):
+                metrics[f"{stage}/objective-values-mean-{key}"] = gathered_objective_values[:, i].mean().item()
+            metrics["objective-evaluations"] = objective_evaluations
 
         self.accelerator.log(metrics)

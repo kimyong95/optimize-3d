@@ -138,7 +138,7 @@ class Trainer(BaseTrainer):
             meshes = [ post_process_mesh(mesh) for mesh in meshes ]
 
             objective_values = self.objective_evaluator(meshes)
-            objective_values = torch.from_numpy(objective_values).to(self.device)
+            objective_values = objective_values.to(self.device)
 
             # each element is len of batch_size
             training_data.append({
@@ -266,7 +266,7 @@ class Trainer(BaseTrainer):
             meshes = [ to_trimesh(mesh) for mesh in meshes ]
             meshes = [ post_process_mesh(mesh) for mesh in meshes ]
             objective_values = self.objective_evaluator(meshes)
-            objective_values = torch.from_numpy(objective_values).to(self.device)
+            objective_values = objective_values.to(self.device)
 
             all_objective_values.append(objective_values)
             all_meshes.extend(meshes)

@@ -124,9 +124,11 @@ class ObjectiveEvaluator:
             drag_force = output_dict["drag_force"]
             frontal_area = self.frontal_area(mesh)
             drag_coefficient = self.force_to_coefficient(drag_force, frontal_area)
-            objective_value = drag_coefficient
+            objective_value = torch.tensor([drag_coefficient])
         elif self.objective == "drag-lift-force": # minimize sum of drag and lift forces
-            objective_value = output_dict["drag_force"] + output_dict["lift_force"]
+            objective_value = torch.tensor([output_dict["drag_force"] + output_dict["lift_force"]])
+        elif self.objective == "MOO-drag-lift-force":
+            objective_value = torch.tensor([output_dict["drag_force"].item(), output_dict["lift_force"].item()])
         else:
             raise ValueError(f"Unknown objective: {self.objective}")
         
@@ -134,10 +136,10 @@ class ObjectiveEvaluator:
     
     def evaluate_batch(self, meshes, max_workers=8):
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            drag_coefficient = list(executor.map(self.evaluate_one, meshes))
-        return drag_coefficient
+            objective_values = list(executor.map(self.evaluate_one, meshes))
+        return objective_values
 
     def __call__(self, meshes):
-        rewards = self.evaluate_batch(meshes)
-        rewards = numpy.stack(rewards)
-        return rewards
+        objective_values = self.evaluate_batch(meshes)
+        objective_values = torch.stack(objective_values)
+        return objective_values

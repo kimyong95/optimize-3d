@@ -67,7 +67,8 @@ class Trainer(BaseTrainer):
         meshes, slats = self.generate_meshes_from_coords(cond, coords)
 
         objective_values = self.objective_evaluator(meshes)
-        objective_values = torch.from_numpy(objective_values).to(self.device)
+        objective_values = objective_values.to(self.device)
+        self.log_objective_metrics(objective_values, objective_evaluations=self.objective_evaluations[-1], stage="final")
         self.log_meshes(meshes, slats, objective_values, objective_evaluations=self.objective_evaluations[-1], stage="final")
 
     @staticmethod
@@ -126,7 +127,7 @@ class Trainer(BaseTrainer):
                     pred_sample_ij = self.sample_once_original(model, x_prev_ij.unsqueeze(0), t_prev, t_seq[t_prev_prev_idx], cond_one, noise_level=0.0, **kwargs).pred_x_0 if t_prev_prev_idx < len(t_seq) else x_prev_ij.unsqueeze(0)
                     coords = torch.argwhere(external_self.pipeline.models['sparse_structure_decoder'](pred_sample_ij)>0)[:, [0, 2, 3, 4]].int()
                     meshes, slats = external_self.generate_meshes_from_coords(cond_dict_one, coords)
-                    objective_values[j] = torch.from_numpy(external_self.objective_evaluator(meshes)).to(x_t.device)
+                    objective_values[j] = external_self.objective_evaluator(meshes).to(x_t.device)
                 except Exception as e:
                     print(f"Exception {e} when decoding at {t_idx}-th timestep, assign inf objective values")
             x_prev_candidates_obj_values.append(objective_values)

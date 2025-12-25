@@ -72,7 +72,9 @@ class Trainer(BaseTrainer):
             if torch.isfinite(objective_values_t).all():
                 self.log_objective_metrics(objective_values_t, objective_evaluations=self.config.total_num_samples * self.config.expansion_size * (t+1))
         
-        self.log_meshes(all_meshes,all_slats,all_log_trajectory_obj_values[:, -1], objective_evaluations=self.config.total_num_samples * self.config.expansion_size * self.config.num_inference_steps, stage="final")
+        total_objective_evaluations = self.config.total_num_samples * self.config.expansion_size * self.config.num_inference_steps
+        self.log_objective_metrics(all_log_trajectory_obj_values[:, -1], objective_evaluations=total_objective_evaluations, stage="final")
+        self.log_meshes(all_meshes,all_slats,all_log_trajectory_obj_values[:, -1], objective_evaluations=total_objective_evaluations, stage="final")
 
     @staticmethod
     def sample_once_treeg(
@@ -125,7 +127,7 @@ class Trainer(BaseTrainer):
                     pred_sample_ij = self.sample_once_original(model, x_prev_ij.unsqueeze(0), t_prev, t_seq[t_prev_prev_idx], cond_one, noise_level=0.0, **kwargs).pred_x_0 if t_prev_prev_idx < len(t_seq) else x_prev_ij.unsqueeze(0)
                     coords = torch.argwhere(external_self.pipeline.models['sparse_structure_decoder'](pred_sample_ij)>0)[:, [0, 2, 3, 4]].int()
                     meshes, slats = external_self.generate_meshes_from_coords(cond_dict_one, coords)
-                    objective_values[j] = torch.from_numpy(external_self.objective_evaluator(meshes)).to(x_t.device)
+                    objective_values[j] = external_self.objective_evaluator(meshes).to(x_t.device)
                 except Exception as e:
                     print(f"Exception {e} when decoding at {t_idx}-th timestep, assign inf objective values")
             x_prev_candidates_obj_values.append(objective_values)

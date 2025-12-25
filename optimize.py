@@ -136,7 +136,7 @@ class Trainer(BaseTrainer):
             noise, noise_projected = get_noise(self.mu, self.sigma, self.batch_size_per_device, self.device)
             meshes, slats, pred_data_trajectory = self.generate(batch_size=batch_size, intermediate_noise=noise_projected)
             objective_values = self.objective_evaluator(meshes)
-            objective_values = torch.from_numpy(objective_values).to(device=self.device, dtype=torch.float32)
+            objective_values = objective_values.to(device=self.device, dtype=torch.float32)
             all_noise.append(noise)
             all_objective_values.append(objective_values)
 
@@ -195,7 +195,7 @@ class Trainer(BaseTrainer):
             )
 
             objective_values = self.objective_evaluator(meshes)
-            objective_values = torch.from_numpy(objective_values).to(self.device)
+            objective_values = objective_values.to(self.device)
 
             all_meshes.extend(meshes)
             all_slats.extend(slats)

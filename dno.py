@@ -139,7 +139,7 @@ class Trainer(BaseTrainer):
                         ref_coords, ref_xs = self.pipeline.sample_sparse_structure(cond, 1, sparse_structure_sampler_params)
                     ref_meshes, ref_slats = self.generate_meshes_from_coords(cond, ref_coords)
                     ref_objective_value = self.objective_evaluator(ref_meshes)
-                    ref_objective_value = torch.tensor(ref_objective_value, device=self.device)
+                    ref_objective_value = ref_objective_value.to(self.device)
                     
                     # ------------- logging ref ------------ #
                     meshes.append(ref_meshes[0])
@@ -159,7 +159,7 @@ class Trainer(BaseTrainer):
                     perturbed_coords, perturbed_xs = self.pipeline.sample_sparse_structure(cond, self.config.batch_size, sparse_structure_sampler_params)
                     perturbed_meshes, perturbed_slats = self.generate_meshes_from_coords(cond, perturbed_coords)
                     perturbed_objective_values = self.objective_evaluator(perturbed_meshes)
-                    perturbed_objective_values = torch.tensor(perturbed_objective_values, device=self.device)
+                    perturbed_objective_values = perturbed_objective_values.to(self.device)
                     
                     # ------------ optimization ------------ #
                     est_grad = torch.zeros_like(ref_xs[0])
