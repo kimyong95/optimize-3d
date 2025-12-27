@@ -210,7 +210,7 @@ class Trainer(BaseTrainer):
         objective_values = self.objective_evaluator(meshes)
         objective_values = objective_values.to(self.device)
         total_objective_evaluations = self.config.batch_size * self.config.expansion_size * self.config.num_inference_steps
-        self.log_objective_metrics(objective_values, objective_evaluations=total_objective_evaluations, stage="final", multi_objective_keys=["df", "lf"])
+        self.log_objective_metrics(objective_values, objective_evaluations=total_objective_evaluations, stage="final")
         self.log_meshes(meshes, slats, objective_values, objective_evaluations=total_objective_evaluations, stage="final")
 
     @staticmethod
@@ -291,7 +291,7 @@ class Trainer(BaseTrainer):
 
         # log
         if torch.isfinite(selected_multi_obj_values).all():
-            external_self.log_objective_metrics(selected_multi_obj_values, objective_evaluations=external_self.config.batch_size * external_self.config.expansion_size * (t_idx+1), multi_objective_keys=["df", "lf"])
+            external_self.log_objective_metrics(selected_multi_obj_values, objective_evaluations=external_self.config.batch_size * external_self.config.expansion_size * (t_idx+1))
 
         return edict({"pred_x_prev": x_prev, "pred_x_0": pred_x_0})
 
@@ -301,17 +301,16 @@ class Trainer(BaseTrainer):
         weights: (num objectives,)
         """
 
-        if self.config.shift_constant_mode == "best":                
+        if self.config.shift_constant_mode == "batch-best":
+            self.c[:] = multi_objective_values.min(dim=0).values
+        elif self.config.shift_constant_mode == "batch-worst":
+            self.c[:] = multi_objective_values.max(dim=0).values
+        elif self.config.shift_constant_mode == "global-best":
             self.c[:] = torch.minimum(self.c, multi_objective_values.min(dim=0).values)
-        elif self.config.shift_constant_mode == "worst":
+        elif self.config.shift_constant_mode == "global-worst":
             self.c[:] = torch.maximum(self.c, multi_objective_values.max(dim=0).values)
-
-        if self.config.aggregation_mode == "max":
-            aggregated_objective_value = torch.max(
-                (multi_objective_values - self.c[None, :]) / weights[None, :],
-                dim=1
-            ).values
-        elif self.config.aggregation_mode == "logsumexp":
+        
+        if self.config.aggregation_mode == "logsumexp":
             aggregated_objective_value = torch.logsumexp(
                 (multi_objective_values - self.c[None, :]) / weights[None, :],
                 dim=1

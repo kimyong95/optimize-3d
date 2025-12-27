@@ -2,19 +2,19 @@ import math
 import os
 import pickle
 from collections import defaultdict
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Any, Union
+import itertools
+import sys
 
 import accelerate
-import sys
 import einops
 import numpy as np
 import open3d as o3d
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
+from torch.distributions.dirichlet import Dirichlet
 import trimesh
-from typing import List, Optional, Tuple, Any, Union
-import itertools
 from peft import LoraConfig, get_peft_model
 import wandb
 from absl import app, flags
@@ -22,11 +22,6 @@ from accelerate import Accelerator
 from accelerate.utils import set_seed
 from ml_collections import config_flags
 from PIL import Image
-from rewards import ObjectiveEvaluator
-from trellis.pipelines import TrellisTextTo3DPipeline
-from trellis.representations.mesh.cube2mesh import MeshExtractResult
-from value_model import ValueModel
-from utils import collect_calls
 from tqdm import tqdm
 import trellis.modules.sparse as sp
 from utils import collect_calls, to_trimesh, post_process_mesh
@@ -103,7 +98,6 @@ class Trainer(BaseTrainer):
         if self.config.eval_freq > 0:
             self.evaluation_step(epoch=0, noisy=True)
             self.evaluation_step(epoch=0, noisy=False)
-            
         
         for epoch in tqdm(range(1, self.config.epoches+1), desc="Epochs", position=0, disable=not self.accelerator.is_main_process):
             
@@ -114,7 +108,6 @@ class Trainer(BaseTrainer):
                 self.evaluation_step(epoch=epoch, noisy=True)
                 self.evaluation_step(epoch=epoch, noisy=False)
                 
-
         self.accelerator.end_training()
 
     @torch.no_grad()
@@ -124,11 +117,14 @@ class Trainer(BaseTrainer):
         training_kwargs = []
         all_meshes = []
         all_slats = []
+
         for data_ids in tqdm(self.train_dataloader, desc="Sampling", position=1, leave=False, disable=not self.accelerator.is_main_process):
             
             batch_size = len(data_ids)
 
+            weights = Dirichlet(torch.ones(self.objective_evaluator.num_objectives)).sample((batch_size,)).to(self.device)
             cond = self.pipeline.get_cond([self.prompt]*batch_size)
+
             with collect_calls(self.pipeline.sparse_structure_sampler.sample_once, arg_names=["x_t", "t", "t_prev", "cond", "neg_cond", "cfg_strength", "cfg_interval"]) as collected_data:            
                 coords = self.pipeline.sample_sparse_structure(cond, batch_size, { "noise_level": 0.7 })
 
@@ -147,6 +143,7 @@ class Trainer(BaseTrainer):
                     "prev_sample": torch.stack([d["return"]["pred_x_prev"] for d in collected_data],dim=1),
                     "prev_sample_mean": torch.stack([d["return"]["pred_x_prev_mean"] for d in collected_data],dim=1),
                     "objective_values": objective_values,
+                    "weights": weights,
             })
             
             training_kwargs_names = ["neg_cond", "cfg_strength", "cfg_interval", "t", "t_prev"]
@@ -165,8 +162,10 @@ class Trainer(BaseTrainer):
         training_kwargs = training_kwargs[0]
 
         objective_values = training_data["objective_values"]
+        weights = training_data["weights"]
         gathered_objective_values = self.accelerator.gather(objective_values)
-        gathered_rewards = - gathered_objective_values.mean(dim=-1)
+        gathered_weights = self.accelerator.gather(weights)
+        gathered_rewards = - (gathered_objective_values * gathered_weights).sum(dim=-1)
         gathered_advantages = ( gathered_rewards - gathered_rewards.mean() ) / (gathered_rewards.std(unbiased=False) + 1e-4) # unbiased=False to match np.std() in the official source code
 
         training_data["advantages"] = einops.rearrange(gathered_advantages,'(process batch) -> process batch',process=self.accelerator.num_processes)[self.accelerator.process_index]

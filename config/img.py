@@ -12,6 +12,6 @@ def get_config():
     config.batch_size = 16      # b_0 in the paper
     config.expansion_size = 4     # b_1 in the paper
 
-    config.objective = "MOO-drag-lift-force"
+    config.objectives = "drag-force;lift-force"
 
     return config

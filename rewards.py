@@ -1,7 +1,7 @@
 # set -a; source .env; set +a
-# docker run --rm --runtime=nvidia \
-#   --gpus \"device=0,1\" --shm-size 2g -p 8000:8000 -e NGC_API_KEY \
-#   -t nvcr.io/nim/nvidia/domino-automotive-aero:2.0.0
+# docker run -d --runtime=nvidia \
+#   --gpus \"device=0,1,2,3\" --shm-size 2g -p 8000:8000 -e NGC_API_KEY \
+#   -t nvcr.io/nim/nvidia/domino-automotive-aero:2.0.0 --name domino
 
 import io, httpx, numpy
 import tempfile
@@ -35,8 +35,14 @@ def retry(times, failed_return, exceptions, backoff_factor=1):
         return wrapper
     return decorator
 
+OBJECTIVE_SHORT_NAMES = {
+    "drag-coefficient": "dc",
+    "drag-force": "df",
+    "lift-force": "lf",
+}
+
 class ObjectiveEvaluator:
-    def __init__(self, domain_name="localhost", port="8000", objective="drag_coefficient"):
+    def __init__(self, domain_name="localhost", port="8000", objectives=["drag-coefficient"]):
         self.url = f"http://{domain_name}:{port}/v1/infer"
         self.data = {
             "stream_velocity": "30.0", 
@@ -44,12 +50,19 @@ class ObjectiveEvaluator:
             "point_cloud_size": "500000",
         }
 
-        self.objective = objective
+        self.objectives = objectives
 
         # --- Constants for Cd calculation (no new user parameters) ---
         self._RHO_AIR = 1.225  # kg/m^3 (ISA sea-level)
         self._GRID_RES = 512   # internal resolution for frontal-area estimate
 
+    @property
+    def num_objectives(self):
+        return len(self.objectives)
+
+    @property
+    def objective_short_names(self):
+        return [OBJECTIVE_SHORT_NAMES[obj] for obj in self.objectives]
 
     @staticmethod
     def frontal_area(mesh: trimesh.Trimesh,
@@ -105,9 +118,6 @@ class ObjectiveEvaluator:
     # return [objective_value] lower is better
     @retry(times=10, failed_return=None, exceptions=(HTTPError), backoff_factor=2)
     def evaluate_one(self, mesh, retry_attempt):
-        
-        if self.objective == "volume":
-            return mesh.volume
 
         with tempfile.NamedTemporaryFile(mode='wb+', delete=True, suffix='.stl') as f:
             mesh.export(f.name)
@@ -120,17 +130,19 @@ class ObjectiveEvaluator:
         with numpy.load(io.BytesIO(r.content)) as output_data:
             output_dict = {key: output_data[key] for key in output_data.keys()}
         
-        if self.objective == "drag-coefficient":
-            drag_force = output_dict["drag_force"]
-            frontal_area = self.frontal_area(mesh)
-            drag_coefficient = self.force_to_coefficient(drag_force, frontal_area)
-            objective_value = torch.tensor([drag_coefficient])
-        elif self.objective == "drag-lift-force": # minimize sum of drag and lift forces
-            objective_value = torch.tensor([output_dict["drag_force"] + output_dict["lift_force"]])
-        elif self.objective == "MOO-drag-lift-force":
-            objective_value = torch.tensor([output_dict["drag_force"].item(), output_dict["lift_force"].item()])
-        else:
-            raise ValueError(f"Unknown objective: {self.objective}")
+        objective_value = torch.zeros(self.num_objectives)
+        for i, objective in enumerate(self.objectives):
+            if objective == "drag-coefficient":
+                drag_force = output_dict["drag_force"]
+                frontal_area = self.frontal_area(mesh)
+                drag_coefficient = self.force_to_coefficient(drag_force, frontal_area)
+                objective_value[i] = drag_coefficient.item()
+            elif objective == "drag-force":
+                objective_value[i] = output_dict["drag_force"].item()
+            elif objective == "lift-force":
+                objective_value[i] = output_dict["lift_force"].item()
+            else:
+                raise ValueError(f"Unknown objective: {objective}")
         
         return objective_value
     

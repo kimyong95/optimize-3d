@@ -49,7 +49,7 @@ class Trainer(BaseTrainer):
 
         all_log_trajectory_obj_values = []
         for _ in range(self.config.total_num_samples):
-            self.log_trajectory_obj_values = torch.zeros((self.config.num_inference_steps), device=self.device)
+            self.log_trajectory_obj_values = torch.zeros((self.config.num_inference_steps, self.objective_evaluator.num_objectives), device=self.device)
             sparse_structure_sampler_params = {
                 "steps": self.config.num_inference_steps,
                 "noise_level": 0.7,
@@ -66,15 +66,15 @@ class Trainer(BaseTrainer):
             all_log_trajectory_obj_values.append(self.log_trajectory_obj_values)
         
         # log trajectory objective values
-        all_log_trajectory_obj_values = torch.stack(all_log_trajectory_obj_values) # (N, T)
+        all_log_trajectory_obj_values = torch.stack(all_log_trajectory_obj_values) # (N, T, K)
         for t in range(self.config.num_inference_steps):
-            objective_values_t = all_log_trajectory_obj_values[:, t]
+            objective_values_t = all_log_trajectory_obj_values[:, t, :]
             if torch.isfinite(objective_values_t).all():
                 self.log_objective_metrics(objective_values_t, objective_evaluations=self.config.total_num_samples * self.config.expansion_size * (t+1))
         
         total_objective_evaluations = self.config.total_num_samples * self.config.expansion_size * self.config.num_inference_steps
-        self.log_objective_metrics(all_log_trajectory_obj_values[:, -1], objective_evaluations=total_objective_evaluations, stage="final")
-        self.log_meshes(all_meshes,all_slats,all_log_trajectory_obj_values[:, -1], objective_evaluations=total_objective_evaluations, stage="final")
+        self.log_objective_metrics(all_log_trajectory_obj_values[:, -1, :], objective_evaluations=total_objective_evaluations, stage="final")
+        self.log_meshes(all_meshes,all_slats,all_log_trajectory_obj_values[:, -1, :], objective_evaluations=total_objective_evaluations, stage="final")
 
     @staticmethod
     def sample_once_treeg(
@@ -121,7 +121,7 @@ class Trainer(BaseTrainer):
             x_prev_candidates.append(x_prev_i)
             
             # determinisitcally sample once, decode and evaluate
-            objective_values = torch.full((external_self.config.expansion_size,), float('inf'), device=x_t.device)
+            objective_values = torch.full((external_self.config.expansion_size, external_self.objective_evaluator.num_objectives), float('inf'), device=x_t.device)
             for j, x_prev_ij in enumerate(x_prev_i):
                 try:
                     pred_sample_ij = self.sample_once_original(model, x_prev_ij.unsqueeze(0), t_prev, t_seq[t_prev_prev_idx], cond_one, noise_level=0.0, **kwargs).pred_x_0 if t_prev_prev_idx < len(t_seq) else x_prev_ij.unsqueeze(0)
@@ -137,9 +137,9 @@ class Trainer(BaseTrainer):
         x_prev_candidates_obj_values = torch.cat(x_prev_candidates_obj_values, dim=0)
 
         # global selection
-        next_indices = x_prev_candidates_obj_values.topk(batch_size, largest=False).indices
+        next_indices = x_prev_candidates_obj_values.mean(dim=-1).topk(batch_size, largest=False).indices
         x_prev_candidates_obj_values = x_prev_candidates_obj_values[next_indices]
-        external_self.log_trajectory_obj_values[t_idx] = x_prev_candidates_obj_values.mean()
+        external_self.log_trajectory_obj_values[t_idx] = x_prev_candidates_obj_values.mean(dim=0)
         x_prev = x_prev_candidates[next_indices]
         
         return edict({"pred_x_prev": x_prev, "pred_x_0": pred_x_0})

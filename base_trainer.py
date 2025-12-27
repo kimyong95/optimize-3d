@@ -22,7 +22,7 @@ class BaseTrainer:
     def __init__(self,config, accelerator_kwargs: Optional[dict] = {}):
         self.config = config
 
-        self.accelerator = Accelerator(log_with="wandb", **accelerator_kwargs)
+        self.accelerator = Accelerator(log_with="wandb", mixed_precision="bf16", **accelerator_kwargs)
         self.accelerator.init_trackers(
             project_name="optimize-3d",
             config=config.to_dict(),
@@ -33,9 +33,11 @@ class BaseTrainer:
 
         self.pipeline = TrellisTextTo3DPipeline.from_pretrained("microsoft/TRELLIS-text-xlarge")
         self.pipeline.to(self.device)
-        
-        self.objective_evaluator = ObjectiveEvaluator(objective=config.objective, port=config.reward_server_port)
+
+        self.objective_evaluator = ObjectiveEvaluator(objectives=config.objectives.split(";"), port=config.reward_server_port)
         self.prompt = config.prompt
+
+        self.wandb_tables = {}
 
         self._init_renderer()
         self._log_code()
@@ -184,9 +186,13 @@ class BaseTrainer:
 
         for view_name, view_param in views.items():
             for idx, (mesh, objective_value) in enumerate(zip(gather_meshes, gather_objective_values)):
+                
+                f_str = ",".join([ f"{name}={v.item():.4f}" for name, v in zip(self.objective_evaluator.objective_short_names, objective_value)])
+                caption = f"i={idx},{f_str}]"
+
                 wandb_image = wandb.Image(
                     self.render_photo_open3d(mesh, **view_param),
-                    caption=f"i={idx},f={objective_value:.4f}",
+                    caption=caption,
                     file_type="jpeg",
                 )
                 wandb_images[f"{stage}/{view_name}-images"].append(wandb_image)
@@ -207,24 +213,30 @@ class BaseTrainer:
         objective_values: torch.Tensor,
         objective_evaluations: int,
         stage: str = "train",
-        multi_objective_keys: Optional[List[str]] = None,
     ) -> None:
 
         gathered_objective_values = self.accelerator.gather(objective_values)
         self.accelerator.wait_for_everyone()
 
-        # single-objective
-        if objective_values.dim() == 1:
-            metrics = {
-                f"{stage}/objective-values-mean": gathered_objective_values.mean().item(),
-                "objective-evaluations": objective_evaluations,
-            }
-        # multi-objective
-        elif objective_values.dim() == 2:
-            assert multi_objective_keys is not None and len(multi_objective_keys) == objective_values.size(1)
-            metrics = {}
-            for i, key in enumerate(multi_objective_keys):
-                metrics[f"{stage}/objective-values-mean-{key}"] = gathered_objective_values[:, i].mean().item()
-            metrics["objective-evaluations"] = objective_evaluations
+        metrics = {
+            f"{stage}/objective-mean": gathered_objective_values.mean().item(),
+            "objective-evaluations": objective_evaluations
+        }
+        for i, obj_name in enumerate(self.objective_evaluator.objective_short_names):
+            metrics[f"{stage}/objective-{obj_name}"] = gathered_objective_values[:, i].mean().item()
 
         self.accelerator.log(metrics)
+
+        if not self.accelerator.is_main_process:
+            return
+
+        self._maybe_init_wandb_table(stage)
+
+        for val in gathered_objective_values.tolist():
+            self.wandb_tables[stage].add_data(objective_evaluations, *val)
+        self.accelerator.get_tracker("wandb").log({f"{stage}/objective-table": self.wandb_tables[stage]})
+
+
+    def _maybe_init_wandb_table(self, stage: str) -> None:
+        if stage not in self.wandb_tables:
+            self.wandb_tables[stage] = wandb.Table(columns=["objective-evaluations"] + self.objective_evaluator.objective_short_names, log_mode="INCREMENTAL")

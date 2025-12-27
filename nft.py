@@ -177,7 +177,7 @@ class Trainer(BaseTrainer):
 
         objective_values = training_data["objective_values"]
         gathered_objective_values = self.accelerator.gather(objective_values)
-        gathered_rewards = - gathered_objective_values
+        gathered_rewards = - gathered_objective_values.mean(dim=-1)
         gathered_advantages = ( gathered_rewards - gathered_rewards.mean() ) / (gathered_rewards.std(unbiased=False) + 1e-4) # unbiased=False to match np.std() in the official source code
 
         training_data["advantages"] = einops.rearrange(gathered_advantages,'(process batch) -> process batch',process=self.accelerator.num_processes)[self.accelerator.process_index]

@@ -144,6 +144,7 @@ class Trainer(BaseTrainer):
         all_objective_values = torch.cat(all_objective_values, dim=0)
 
         gathered_objective_values = self.accelerator.gather(all_objective_values)
+        gathered_objective_values_mean = gathered_objective_values.mean(dim=-1)
         assert self.config.total_num_samples == len(gathered_objective_values)
 
         gathered_noise = einops.rearrange(self.accelerator.gather(einops.rearrange(all_noise, "T B D -> B T D")), "B T D -> T B D")
@@ -157,7 +158,7 @@ class Trainer(BaseTrainer):
             
             self.value_model.add_model_data(
                 x = gathered_pred_data_trajectory[-1],
-                y = gathered_objective_values,
+                y = gathered_objective_values_mean,
             )
 
             for t in range(self.config.num_inference_steps - 1):

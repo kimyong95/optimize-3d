@@ -163,8 +163,10 @@ class Trainer(BaseTrainer):
                     
                     # ------------ optimization ------------ #
                     est_grad = torch.zeros_like(ref_xs[0])
+                    ref_obj_val_mean = ref_objective_value.mean(dim=-1)
+                    perturbed_obj_vals_mean = perturbed_objective_values.mean(dim=-1)
                     for i in range(self.config.batch_size):
-                        est_grad += (perturbed_objective_values[i] - ref_objective_value) * (perturbed_xs[i] - ref_xs[0])
+                        est_grad += (perturbed_obj_vals_mean[i] - ref_obj_val_mean) * (perturbed_xs[i] - ref_xs[0])
                     est_grad /= (torch.norm(est_grad) + 1e-3)
                     with torch.enable_grad():
                         loss = torch.sum(est_grad * ref_xs[0])
@@ -183,8 +185,7 @@ class Trainer(BaseTrainer):
             
             torch.cuda.empty_cache()
 
-        # flip: (B, optimization_steps) -> (optimization_steps, B)
-        all_objective_values = torch.stack(all_objective_values).T
+        all_objective_values = einops.rearrange(torch.stack(all_objective_values), "B T K -> T B K")
         all_steps_meshes = list(map(list, zip(*all_meshes)))
         all_steps_slats = list(map(list, zip(*all_slats)))
 

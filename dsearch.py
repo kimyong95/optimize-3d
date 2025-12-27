@@ -66,8 +66,7 @@ class Trainer(BaseTrainer):
         cond = self.pipeline.get_cond([self.prompt]*self.config.final_batch_size)
         meshes, slats = self.generate_meshes_from_coords(cond, coords)
 
-        objective_values = self.objective_evaluator(meshes)
-        objective_values = objective_values.to(self.device)
+        objective_values = self.objective_evaluator(meshes).to(self.device)
         self.log_objective_metrics(objective_values, objective_evaluations=self.objective_evaluations[-1], stage="final")
         self.log_meshes(meshes, slats, objective_values, objective_evaluations=self.objective_evaluations[-1], stage="final")
 
@@ -121,7 +120,7 @@ class Trainer(BaseTrainer):
             x_prev_candidates.append(x_prev_i)
             
             # determinisitcally sample once, decode and evaluate
-            objective_values = torch.full((expansion_size,), float('inf'), device=x_t.device)
+            objective_values = torch.full((expansion_size, external_self.objective_evaluator.num_objectives), float('inf'), device=x_t.device)
             for j, x_prev_ij in enumerate(x_prev_i):
                 try:
                     pred_sample_ij = self.sample_once_original(model, x_prev_ij.unsqueeze(0), t_prev, t_seq[t_prev_prev_idx], cond_one, noise_level=0.0, **kwargs).pred_x_0 if t_prev_prev_idx < len(t_seq) else x_prev_ij.unsqueeze(0)
@@ -134,16 +133,16 @@ class Trainer(BaseTrainer):
 
         # flatten
         x_prev_candidates = torch.stack(x_prev_candidates, dim=0)
-        x_prev_candidates_obj_values = torch.stack(x_prev_candidates_obj_values, dim=0)
+        x_prev_candidates_obj_values = torch.stack(x_prev_candidates_obj_values, dim=0) # (batch_size, expansion_size, num_objectives)
 
         # instance-wise best
-        best_indices = x_prev_candidates_obj_values.argmin(dim=1)
+        best_indices = x_prev_candidates_obj_values.mean(dim=-1).argmin(dim=1)
         x_prev_candidates = x_prev_candidates[torch.arange(len(x_prev_candidates)), best_indices]
         x_prev_candidates_obj_values = x_prev_candidates_obj_values[torch.arange(len(x_prev_candidates_obj_values)), best_indices]
 
         # global selection
         next_batch_size = external_self.batch_size_t[t_prev_idx]
-        next_indices = x_prev_candidates_obj_values.topk(next_batch_size, largest=False).indices
+        next_indices = x_prev_candidates_obj_values.mean(dim=-1).topk(next_batch_size, largest=False).indices
         x_prev = x_prev_candidates[next_indices]
         x_prev_candidates_obj_values = x_prev_candidates_obj_values[next_indices]
         pred_x_0 = pred_x_0[next_indices]
