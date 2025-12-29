@@ -1,7 +1,7 @@
 # set -a; source .env; set +a
-# docker run -d --runtime=nvidia \
+# docker run --name domino -d --runtime=nvidia \
 #   --gpus \"device=0,1,2,3\" --shm-size 2g -p 8000:8000 -e NGC_API_KEY \
-#   -t nvcr.io/nim/nvidia/domino-automotive-aero:2.0.0 --name domino
+#   -t nvcr.io/nim/nvidia/domino-automotive-aero:2.0.0
 
 import io, httpx, numpy
 import tempfile

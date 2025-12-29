@@ -31,7 +31,6 @@ FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/img.py", "Training configuration.")
 
 
-
 def get_frac(x):
     """
     Calculates the fractional part of a number.
@@ -189,9 +188,9 @@ class Trainer(BaseTrainer):
 
         # shift constant
         self.c = torch.zeros((self.num_objectives,), dtype=torch.float32, device=self.accelerator.device)
-        if self.config.shift_constant_mode == "best":
+        if "best" in self.config.shift_constant_mode:
             self.c[:] = float('inf')
-        elif self.config.shift_constant_mode == "worst":
+        elif "worst" in self.config.shift_constant_mode:
             self.c[:] = float('-inf')
 
     @torch.inference_mode()
@@ -300,6 +299,10 @@ class Trainer(BaseTrainer):
         multi_objective_values: (batch size, num objectives)
         weights: (num objectives,)
         """
+
+        if self.config.normalize:
+            multi_objective_values = (multi_objective_values - multi_objective_values.mean(dim=0, keepdim=True)) / multi_objective_values.std(dim=0, keepdim=True).clamp(min=1e-3)
+
 
         if self.config.shift_constant_mode == "batch-best":
             self.c[:] = multi_objective_values.min(dim=0).values

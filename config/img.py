@@ -7,6 +7,7 @@ def get_config():
     
     config.aggregation_mode = "neglogsumexp"
     config.shift_constant_mode = "worst"
+    config.normalize = False
 
     # total objective evaluations: 25*16*4=1600
     config.batch_size = 16      # b_0 in the paper
