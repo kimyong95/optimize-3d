@@ -4,15 +4,11 @@ def get_config():
     config = get_base_config()
 
     config.run_name = "img"
-    
-    config.aggregation_mode = "neglogsumexp"
-    config.shift_constant_mode = "worst"
-    config.normalize = False
 
     # total objective evaluations: 25*16*4=1600
-    config.batch_size = 16      # b_0 in the paper
+    config.batch_size = 16        # b_0 in the paper
     config.expansion_size = 4     # b_1 in the paper
 
-    config.objectives = "drag-force;lift-force"
+    config.objectives = "scaled-drag-force;scaled-lift-force"
 
     return config

@@ -39,6 +39,8 @@ OBJECTIVE_SHORT_NAMES = {
     "drag-coefficient": "dc",
     "drag-force": "df",
     "lift-force": "lf",
+    "scaled-drag-force": "sdf",
+    "scaled-lift-force": "slf",
 }
 
 class ObjectiveEvaluator:
@@ -141,6 +143,12 @@ class ObjectiveEvaluator:
                 objective_value[i] = output_dict["drag_force"].item()
             elif objective == "lift-force":
                 objective_value[i] = output_dict["lift_force"].item()
+            elif objective == "scaled-drag-force":
+                drag_force = output_dict["drag_force"].item() # range ~ [0, 200]
+                objective_value[i] = (drag_force - 200) / 200  # normalize to [-1, 0]
+            elif objective == "scaled-lift-force":
+                lift_force = output_dict["lift_force"].item() # range ~ [-100, 100]
+                objective_value[i] = (lift_force - 100) / 200  # normalize to [-1, 0]
             else:
                 raise ValueError(f"Unknown objective: {objective}")
         

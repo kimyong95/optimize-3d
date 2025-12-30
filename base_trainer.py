@@ -223,7 +223,8 @@ class BaseTrainer:
             "objective-evaluations": objective_evaluations
         }
         for i, obj_name in enumerate(self.objective_evaluator.objective_short_names):
-            metrics[f"{stage}/objective-{obj_name}"] = gathered_objective_values[:, i].mean().item()
+            metrics[f"{stage}/objective-{obj_name}-mean"] = gathered_objective_values[:, i].mean().item()
+            metrics[f"{stage}/objective-{obj_name}-best"] = gathered_objective_values[:, i].min().item()
 
         self.accelerator.log(metrics)
 
