@@ -30,7 +30,6 @@ from base_trainer import BaseTrainer
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/img.py", "Training configuration.")
 
-
 def get_frac(x):
     """
     Calculates the fractional part of a number.
@@ -189,6 +188,11 @@ class Trainer(BaseTrainer):
         # shift constant
         self.c = torch.zeros((self.num_objectives,), dtype=torch.float32, device=self.accelerator.device)
         self.c[:] = float('-inf')
+        if self.config.aggregation_mode == "neglogsumexp":
+            self.c[:] = float('-inf')
+        elif self.config.aggregation_mode == "logsumexp":
+            self.c[:] = float('inf')
+
 
     @torch.inference_mode()
     def run(self) -> None:
@@ -298,9 +302,17 @@ class Trainer(BaseTrainer):
         weights: (num objectives,)
         """
 
-        self.c[:] = torch.maximum(self.c, multi_objective_values.max(dim=0).values)
-        aggregated_objective_value = - torch.logsumexp(- (multi_objective_values - self.c[None, :]) / weights[None, :],dim=1)
-    
+        if self.config.aggregation_mode == "neglogsumexp":
+            self.c[:] = torch.maximum(self.c, multi_objective_values.max(dim=0).values)
+            aggregated_objective_value = - torch.logsumexp(- (multi_objective_values - self.c[None, :]) / weights[None, :],dim=1)
+        elif self.config.aggregation_mode == "logsumexp":
+            self.c[:] = torch.minimum(self.c, multi_objective_values.max(dim=0).values)
+            aggregated_objective_value = torch.logsumexp( (multi_objective_values - self.c[None, :]) / weights[None, :],dim=1)
+        elif self.config.aggregation_mode == "logsumexpstd":
+            pi_k = weights / weights.sum()
+            s_k = ( multi_objective_values - multi_objective_values.mean(dim=0, keepdim=True) ) / multi_objective_values.std(dim=0, keepdim=True).clamp(min=1e-3)
+            aggregated_objective_value = - (torch.log(pi_k) - s_k).sum(dim=1)
+
         return aggregated_objective_value
 
 

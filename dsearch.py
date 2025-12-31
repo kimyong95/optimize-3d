@@ -67,8 +67,8 @@ class Trainer(BaseTrainer):
         meshes, slats = self.generate_meshes_from_coords(cond, coords)
 
         objective_values = self.objective_evaluator(meshes).to(self.device)
-        self.log_objective_metrics(objective_values, objective_evaluations=self.objective_evaluations[-1], stage="final")
-        self.log_meshes(meshes, slats, objective_values, objective_evaluations=self.objective_evaluations[-1], stage="final")
+        self.log_objective_metrics(objective_values, objective_evaluations=int(self.objective_evaluations[-1]), stage="final")
+        self.log_meshes(meshes, slats, objective_values, objective_evaluations=int(self.objective_evaluations[-1]), stage="final")
 
     @staticmethod
     @torch.no_grad()
