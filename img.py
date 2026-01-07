@@ -14,6 +14,7 @@ import open3d as o3d
 import torch
 import torch.nn as nn
 import trimesh
+from scipy.optimize import linear_sum_assignment
 import wandb
 from absl import app, flags
 from accelerate import Accelerator
@@ -26,6 +27,9 @@ from trellis.representations.mesh.cube2mesh import MeshExtractResult
 from typing import Any
 from utils import collect_calls, to_trimesh, post_process_mesh
 from base_trainer import BaseTrainer
+import pandas as pd
+import plotly.express as px
+
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/img.py", "Training configuration.")
@@ -185,14 +189,6 @@ class Trainer(BaseTrainer):
         weight_vectors = generate_weight_vectors(self.config.batch_size, self.num_objectives)
         self.weight_vectors = torch.from_numpy(weight_vectors.T).to(self.accelerator.device)
 
-        # shift constant
-        self.c = torch.zeros((self.num_objectives,), dtype=torch.float32, device=self.accelerator.device)
-        self.c[:] = float('-inf')
-        if self.config.aggregation_mode == "neglogsumexp":
-            self.c[:] = float('-inf')
-        elif self.config.aggregation_mode == "logsumexp":
-            self.c[:] = float('inf')
-
 
     @torch.inference_mode()
     def run(self) -> None:
@@ -272,19 +268,19 @@ class Trainer(BaseTrainer):
                     print(f"Exception {e} when decoding at {t_idx}-th timestep, assign inf objective values")
             x_prev_candidates_multi_obj_values.append(multi_objective_values)
 
-
         # flatten
         x_prev_candidates = torch.cat(x_prev_candidates, dim=0)
         x_prev_candidates_multi_obj_values = torch.cat(x_prev_candidates_multi_obj_values, dim=0) # (batch size * expansion size, num objectives)
-        
-        selected_ids = []
-        candidates_ids = list(range(x_prev_candidates_multi_obj_values.shape[0]))
-        for w in external_self.weight_vectors:
-            aggregated_objectives = external_self.aggregate_objectives(x_prev_candidates_multi_obj_values, w)
-            relative_id = aggregated_objectives.nan_to_num(nan=torch.inf)[candidates_ids].argmin().item()
-            selected_id = candidates_ids[relative_id]
-            selected_ids.append(selected_id)
-            candidates_ids.remove(selected_id)
+
+        if x_prev_candidates_multi_obj_values.isinf().any().item():
+            selected_ids = torch.arange(0, x_prev_candidates_multi_obj_values.shape[0], step=external_self.config.expansion_size, device=x_t.device).tolist()
+        else:
+            all_probs = torch.zeros( (external_self.weight_vectors.shape[0], x_prev_candidates_multi_obj_values.shape[0]), device=x_t.device, dtype=torch.float64)
+            for i, w in enumerate(external_self.weight_vectors):
+                probs = external_self.compute_probs(x_prev_candidates_multi_obj_values, w)
+                all_probs[i] = probs
+
+            selected_ids = external_self.smc_sampling(all_probs).tolist()
 
         x_prev = x_prev_candidates[selected_ids]
         selected_multi_obj_values = x_prev_candidates_multi_obj_values[selected_ids]
@@ -292,29 +288,63 @@ class Trainer(BaseTrainer):
         # log
         if torch.isfinite(selected_multi_obj_values).all():
             external_self.log_objective_metrics(selected_multi_obj_values, objective_evaluations=external_self.config.batch_size * external_self.config.expansion_size * (t_idx+1))
+            external_self.log_selection(x_prev_candidates_multi_obj_values, torch.tensor(selected_ids, device=x_t.device), t_idx)
 
         return edict({"pred_x_prev": x_prev, "pred_x_0": pred_x_0})
-    
 
-    def aggregate_objectives(self, multi_objective_values, weights):
+    def log_selection(self, candidates_multi_obj_values, selected_ids, t_idx):
+        vals = candidates_multi_obj_values.detach().cpu().numpy()
+        labels = np.full(vals.shape[0], "Candidate")
+        labels[selected_ids.detach().cpu().numpy()] = "Selected"
+
+        df = pd.DataFrame({self.objective_evaluator.objective_short_names[0]: vals[:, 0], self.objective_evaluator.objective_short_names[1]: vals[:, 1], "label": labels})
+        fig = px.scatter(df, x=self.objective_evaluator.objective_short_names[0], y=self.objective_evaluator.objective_short_names[1], color="label")
+        wandb.log({"selection-scatter": fig, "timestep": t_idx })
+
+
+    def compute_probs(self, multi_objective_values, weights):
         """
         multi_objective_values: (batch size, num objectives)
         weights: (num objectives,)
         """
 
-        if self.config.aggregation_mode == "neglogsumexp":
-            self.c[:] = torch.maximum(self.c, multi_objective_values.max(dim=0).values)
-            aggregated_objective_value = - torch.logsumexp(- (multi_objective_values - self.c[None, :]) / weights[None, :],dim=1)
-        elif self.config.aggregation_mode == "logsumexp":
-            self.c[:] = torch.minimum(self.c, multi_objective_values.max(dim=0).values)
-            aggregated_objective_value = torch.logsumexp( (multi_objective_values - self.c[None, :]) / weights[None, :],dim=1)
-        elif self.config.aggregation_mode == "logsumexpstd":
-            pi_k = weights / weights.sum()
-            s_k = ( multi_objective_values - multi_objective_values.mean(dim=0, keepdim=True) ) / multi_objective_values.std(dim=0, keepdim=True).clamp(min=1e-3)
-            aggregated_objective_value = - (torch.log(pi_k) - s_k).sum(dim=1)
+        s_k = ( multi_objective_values - multi_objective_values.mean(dim=0, keepdim=True) ) / multi_objective_values.std(dim=0, keepdim=True).clamp(min=1e-3)
 
-        return aggregated_objective_value
+        pi_k = weights / weights.sum()
+        
+        if self.config.probability_mode == "additive":
+            log_weights = torch.logsumexp(-s_k - torch.log(pi_k)[None, :], dim=1)
+            probabilities = torch.softmax(log_weights, dim=0)
+        elif self.config.probability_mode == "product":
+            log_weights = torch.sum( -s_k * pi_k[None, :], dim=1)
+            probabilities = torch.softmax(log_weights, dim=0)
+        elif self.config.probability_mode == "vanilla":
+            log_weights = torch.sum( -s_k * pi_k[None, :], dim=1)
+            probabilities = log_weights # the output is actually not probabilities that sum to 1
+        return probabilities
 
+    def smc_sampling(self, all_probs):
+        """
+        all_probs: (N, M) Tensor of probabilities.
+                Higher values are better.
+        
+        Returns:
+        assigned_indices: (N,) Tensor containing the index j for each row i.
+        """
+
+        N, M = all_probs.shape
+        device = all_probs.device   
+
+        sampled_indices = torch.zeros(N, dtype=torch.long, device=device)
+        mask = torch.ones(M, device=device) # 1 = Available, 0 = Taken
+        processing_order = torch.randperm(N, device=device)
+        for i in processing_order:
+            masked_probs = all_probs[i] * mask
+            selected_idx = torch.argmax(masked_probs).item() if self.config.smc_mode == "greedy" else torch.multinomial(torch.exp(masked_probs), num_samples=1).item()
+            sampled_indices[i] = selected_idx
+            mask[selected_idx] = 0
+
+        return sampled_indices
 
 if __name__ == "__main__":
     FLAGS(sys.argv)

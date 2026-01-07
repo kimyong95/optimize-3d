@@ -8,8 +8,8 @@ def get_config():
     # total objective evaluations: 25*16*4=1600
     config.batch_size = 16        # b_0 in the paper
     config.expansion_size = 4     # b_1 in the paper
-    config.aggregation_mode = "neglogsumexp"
-
     config.objectives = "scaled-drag-force;scaled-lift-force"
-
+    config.smc_mode = "greedy"
+    config.probability_mode = "vanilla"
+    
     return config
