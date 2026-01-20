@@ -27,7 +27,7 @@ from trellis.representations.mesh.cube2mesh import MeshExtractResult
 from typing import Any
 from torch.utils.checkpoint import checkpoint
 from utils import collect_calls, to_trimesh, post_process_mesh
-from base_trainer import BaseTrainer
+from trainer.base_trainer import BaseTrainer
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/dno.py", "Training configuration.")

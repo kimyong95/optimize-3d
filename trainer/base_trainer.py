@@ -17,6 +17,32 @@ from PIL import Image
 from rewards import ObjectiveEvaluator
 from trellis.pipelines import TrellisTextTo3DPipeline
 from utils import to_trimesh, post_process_mesh
+from pymoo.indicators.hv import HV
+
+
+def calculate_hypervolume(points, reference_point=np.array([0,0])):
+    """
+    Calculate hypervolume for multi-objective optimization using pymoo's HV indicator.
+    
+    Args:
+        points: N x K tensor of objective values (lower is better)
+    
+    Returns:
+        hypervolume: Scalar hypervolume value
+    """
+    # pymoo's HV indicator assumes a minimization problem.
+    # We convert our maximization problem to minimization by negating the points.
+    points = points.cpu().numpy()
+    n_points, n_dims = points.shape
+    
+    if n_points == 0:
+        return 0.0
+    
+    # For the converted minimization problem, the reference point must be larger
+    hv_indicator = HV(ref_point=reference_point)
+    hypervolume = hv_indicator(points)
+    
+    return hypervolume
 
 class BaseTrainer:
     def __init__(self,config, accelerator_kwargs: Optional[dict] = {}):
@@ -225,6 +251,10 @@ class BaseTrainer:
         for i, obj_name in enumerate(self.objective_evaluator.objective_short_names):
             metrics[f"{stage}/objective-{obj_name}-mean"] = gathered_objective_values[:, i].mean().item()
             metrics[f"{stage}/objective-{obj_name}-best"] = gathered_objective_values[:, i].min().item()
+
+        if self.objective_evaluator.num_objectives >= 2:
+            hv = calculate_hypervolume(gathered_objective_values)
+            metrics[f"{stage}/hypervolume"] = hv
 
         self.accelerator.log(metrics)
 

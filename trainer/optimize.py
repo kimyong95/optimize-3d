@@ -24,7 +24,7 @@ from trellis.pipelines import TrellisTextTo3DPipeline
 from trellis.representations.mesh.cube2mesh import MeshExtractResult
 from value_model import ValueModel
 from utils import collect_calls, to_trimesh, post_process_mesh
-from base_trainer import BaseTrainer
+from trainer.base_trainer import BaseTrainer
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/optimize.py", "Training configuration.")

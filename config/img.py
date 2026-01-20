@@ -9,7 +9,5 @@ def get_config():
     config.batch_size = 16        # b_0 in the paper
     config.expansion_size = 4     # b_1 in the paper
     config.objectives = "scaled-drag-force;scaled-lift-force"
-    config.smc_mode = "greedy"
-    config.probability_mode = "vanilla"
     
     return config

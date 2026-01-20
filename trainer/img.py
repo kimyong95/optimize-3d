@@ -26,7 +26,7 @@ from trellis.pipelines import TrellisTextTo3DPipeline
 from trellis.representations.mesh.cube2mesh import MeshExtractResult
 from typing import Any
 from utils import collect_calls, to_trimesh, post_process_mesh
-from base_trainer import BaseTrainer
+from trainer.base_trainer import BaseTrainer
 import pandas as pd
 import plotly.express as px
 from pymoo.indicators.hv import HV

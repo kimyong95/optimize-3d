@@ -25,7 +25,7 @@ from PIL import Image
 from tqdm import tqdm
 import trellis.modules.sparse as sp
 from utils import collect_calls, to_trimesh, post_process_mesh
-from base_trainer import BaseTrainer
+from trainer.base_trainer import BaseTrainer
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/grpo.py", "Training configuration.")
