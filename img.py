@@ -29,6 +29,7 @@ from utils import collect_calls, to_trimesh, post_process_mesh
 from base_trainer import BaseTrainer
 import pandas as pd
 import plotly.express as px
+from pymoo.indicators.hv import HV
 
 
 FLAGS = flags.FLAGS
@@ -275,12 +276,13 @@ class Trainer(BaseTrainer):
         if x_prev_candidates_multi_obj_values.isinf().any().item():
             selected_ids = torch.arange(0, x_prev_candidates_multi_obj_values.shape[0], step=external_self.config.expansion_size, device=x_t.device).tolist()
         else:
-            all_probs = torch.zeros( (external_self.weight_vectors.shape[0], x_prev_candidates_multi_obj_values.shape[0]), device=x_t.device, dtype=torch.float64)
-            for i, w in enumerate(external_self.weight_vectors):
-                probs = external_self.compute_probs(x_prev_candidates_multi_obj_values, w)
-                all_probs[i] = probs
-
-            selected_ids = external_self.smc_sampling(all_probs).tolist()
+            selected_ids = []
+            available_indices = list(range(x_prev_candidates_multi_obj_values.shape[0]))
+            for weight_idx in torch.randperm(external_self.weight_vectors.shape[0]):
+                local_idx = external_self.select_candidate(x_prev_candidates_multi_obj_values[available_indices], external_self.weight_vectors[weight_idx])
+                global_idx = available_indices.pop(local_idx)
+                selected_ids.append(global_idx)
+            selected_ids = torch.tensor(selected_ids, device=x_t.device)
 
         x_prev = x_prev_candidates[selected_ids]
         selected_multi_obj_values = x_prev_candidates_multi_obj_values[selected_ids]
@@ -292,6 +294,25 @@ class Trainer(BaseTrainer):
 
         return edict({"pred_x_prev": x_prev, "pred_x_0": pred_x_0})
 
+    def select_candidate(objective_values, preference_vector):
+        """
+        Selects the best candidate based on the preference vector.
+        
+        Args:
+            objective_values: (N, K) torch.Tensor.
+            preference_vector: (K,) torch.Tensor.
+            
+        Returns:
+            int: The index of the selected candidate.
+        """
+
+        # normalize to [-1,0]
+        objective_values = (objective_values - objective_values.min(dim=0).values) / (objective_values.max(dim=0).values - objective_values.min(dim=0).values) - 1.0
+        aggregated_values = torch.max(objective_values / preference_vector[None, :], dim=1).values
+        best_idx = torch.argmin(aggregated_values).item()
+
+        return best_idx
+
     def log_selection(self, candidates_multi_obj_values, selected_ids, t_idx):
         vals = candidates_multi_obj_values.detach().cpu().numpy()
         labels = np.full(vals.shape[0], "Candidate")
@@ -301,50 +322,25 @@ class Trainer(BaseTrainer):
         fig = px.scatter(df, x=self.objective_evaluator.objective_short_names[0], y=self.objective_evaluator.objective_short_names[1], color="label")
         wandb.log({"selection-scatter": fig, "timestep": t_idx })
 
-
-    def compute_probs(self, multi_objective_values, weights):
+    def select_candidate(self, objective_values, preference_vector):
         """
-        multi_objective_values: (batch size, num objectives)
-        weights: (num objectives,)
-        """
-
-        s_k = ( multi_objective_values - multi_objective_values.mean(dim=0, keepdim=True) ) / multi_objective_values.std(dim=0, keepdim=True).clamp(min=1e-3)
-
-        pi_k = weights / weights.sum()
+        Selects the best candidate based on the preference vector.
         
-        if self.config.probability_mode == "additive":
-            log_weights = torch.logsumexp(-s_k - torch.log(pi_k)[None, :], dim=1)
-            probabilities = torch.softmax(log_weights, dim=0)
-        elif self.config.probability_mode == "product":
-            log_weights = torch.sum( -s_k * pi_k[None, :], dim=1)
-            probabilities = torch.softmax(log_weights, dim=0)
-        elif self.config.probability_mode == "vanilla":
-            log_weights = torch.sum( -s_k * pi_k[None, :], dim=1)
-            probabilities = log_weights # the output is actually not probabilities that sum to 1
-        return probabilities
-
-    def smc_sampling(self, all_probs):
-        """
-        all_probs: (N, M) Tensor of probabilities.
-                Higher values are better.
-        
+        Args:
+            objective_values: (N, K) torch.Tensor.
+            preference_vector: (K,) torch.Tensor.
+            
         Returns:
-        assigned_indices: (N,) Tensor containing the index j for each row i.
+            int: The index of the selected candidate.
         """
 
-        N, M = all_probs.shape
-        device = all_probs.device   
+        # normalize to [-1,0]
+        objective_values = (objective_values - objective_values.min(dim=0).values) / (objective_values.max(dim=0).values - objective_values.min(dim=0).values) - 1.0
+        aggregated_values = torch.max(objective_values / preference_vector[None, :], dim=1).values
+        best_idx = torch.argmin(aggregated_values).item()
 
-        sampled_indices = torch.zeros(N, dtype=torch.long, device=device)
-        mask = torch.ones(M, device=device) # 1 = Available, 0 = Taken
-        processing_order = torch.randperm(N, device=device)
-        for i in processing_order:
-            masked_probs = all_probs[i] * mask
-            selected_idx = torch.argmax(masked_probs).item() if self.config.smc_mode == "greedy" else torch.multinomial(torch.exp(masked_probs), num_samples=1).item()
-            sampled_indices[i] = selected_idx
-            mask[selected_idx] = 0
+        return best_idx
 
-        return sampled_indices
 
 if __name__ == "__main__":
     FLAGS(sys.argv)
