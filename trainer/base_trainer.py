@@ -214,7 +214,7 @@ class BaseTrainer:
             for idx, (mesh, objective_value) in enumerate(zip(gather_meshes, gather_objective_values)):
                 
                 f_str = ",".join([ f"{name}={v.item():.4f}" for name, v in zip(self.objective_evaluator.objective_short_names, objective_value)])
-                caption = f"i={idx},{f_str}]"
+                caption = f"i={idx},{f_str}"
 
                 wandb_image = wandb.Image(
                     self.render_photo_open3d(mesh, **view_param),
