@@ -23,10 +23,6 @@ class Trainer(BaseTrainer):
     def run(self) -> None:
         N = self.config.batch_size
 
-        self.log_trajectory_obj_values = torch.zeros(
-            (self.config.num_inference_steps, self.objective_evaluator.num_objectives),
-            device=self.device,
-        )
         self.max_r = torch.full((N,), float("-inf"), device=self.device, dtype=torch.float32)
         self._cond_dict_one = self.pipeline.get_cond([self.prompt])
 
@@ -40,15 +36,10 @@ class Trainer(BaseTrainer):
         coords = self.pipeline.sample_sparse_structure(cond, N, sparse_structure_sampler_params)
         meshes, slats = self.generate_meshes_from_coords(cond, coords)
 
-        for t in range(self.config.num_inference_steps):
-            objective_values_t = self.log_trajectory_obj_values[t:t+1, :]
-            if torch.isfinite(objective_values_t).all():
-                self.log_objective_metrics(objective_values_t, objective_evaluations=N * (t + 1))
-
         total_objective_evaluations = N * self.config.num_inference_steps
-        final_obj_values = self.log_trajectory_obj_values[-1:, :]
-        self.log_objective_metrics(final_obj_values, objective_evaluations=total_objective_evaluations, stage="final")
-        self.log_meshes(meshes, slats, final_obj_values.expand(len(meshes), -1), objective_evaluations=total_objective_evaluations, stage="final")
+        objective_values = self.objective_evaluator(meshes).to(self.device)
+        self.log_objective_metrics(objective_values, objective_evaluations=total_objective_evaluations, stage="final")
+        self.log_meshes(meshes, slats, objective_values, objective_evaluations=total_objective_evaluations, stage="final")
 
     @staticmethod
     def sample_once_fk_steering(
@@ -105,8 +96,9 @@ class Trainer(BaseTrainer):
         r = -objective_values.mean(dim=-1)
         external_self.max_r = torch.maximum(external_self.max_r, r)
 
+        # log
         if torch.isfinite(objective_values).all():
-            external_self.log_trajectory_obj_values[t_idx] = objective_values.mean(dim=0)
+            external_self.log_objective_metrics(objective_values, objective_evaluations=external_self.config.batch_size * (t_idx + 1))
 
         # ------------ FK resampling ------------- #
         beta = external_self.config.beta
