@@ -144,7 +144,7 @@ class Trainer(BaseTrainer):
         for batch in self.dataloader:
             batch_size = batch.shape[0]
 
-            sparse_structure_sampler_params = {"steps": self.config.num_inference_steps}
+            sparse_structure_sampler_params = {"steps": self.config.num_inference_steps, "noise_level": self.config.noise_level}
 
             cond = self.pipeline.get_cond([self.prompt]*batch_size)
             with collect_calls(self.pipeline.sparse_structure_sampler.sample) as collected_data:

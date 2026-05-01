@@ -36,13 +36,14 @@ def retry(times, failed_return, exceptions, backoff_factor=1):
     return decorator
 
 OBJECTIVE_SHORT_NAMES = {
-    "drag-coefficient": "dc",
     "drag-force": "df",
-    "lift-force": "lf",
+    "drag-coefficient": "dc",
     "scaled-drag-force": "sdf",
+    "lift-force": "lf",
+    "lift-coefficient": "lc",
     "scaled-lift-force": "slf",
+    "lift-to-drag-ratio": "ld",
 }
-
 class ObjectiveEvaluator:
     def __init__(self, domain_name="localhost", port="8000", objectives=["drag-coefficient"]):
         self.url = f"http://{domain_name}:{port}/v1/infer"
@@ -67,56 +68,55 @@ class ObjectiveEvaluator:
         return [OBJECTIVE_SHORT_NAMES[obj] for obj in self.objectives]
 
     @staticmethod
-    def frontal_area(mesh: trimesh.Trimesh,
-                            nx=4096, ny=4096,
-                            axis='x') -> float:
+    def _silhouette_area(mesh: trimesh.Trimesh, axis: str = 'x', n1=4096, n2=4096) -> float:
         """
-        Robust silhouette area onto the YZ-plane (axis='x' flow).
-        Works best for closed/watertight meshes but tolerates many non-manifold quirks.
-        Resolution (nx, ny) controls accuracy.
+        Silhouette area projected onto the plane perpendicular to `axis`, by ray casting.
+            axis='x' -> frontal area  (YZ-plane, rays along +X)
+            axis='z' -> planform area (XY-plane, rays along +Z, top-down)
         """
-        # Project to YZ plane, so rays go along +X and sample over (Y,Z).
-        assert axis == 'x'
-        # Mesh bounds to define sampling window in Y,Z
-        (xmin, ymin, zmin), (xmax, ymax, zmax) = mesh.bounds
-        y = np.linspace(ymin, ymax, nx, dtype=np.float64)
-        z = np.linspace(zmin, zmax, ny, dtype=np.float64)
-        YY, ZZ = np.meshgrid(y, z, indexing='xy')
+        axis_idx = {'x': 0, 'y': 1, 'z': 2}[axis]
+        o0, o1 = [i for i in range(3) if i != axis_idx]  # the two in-plane axes
 
-        # Ray origins at xmin - eps to be in front of geometry
-        eps = 1e-6 * (xmax - xmin + ymax - ymin + zmax - zmin + 1.0)
-        origins = np.column_stack([np.full(YY.size, xmin - eps),
-                                YY.ravel(), ZZ.ravel()])
-        directions = np.tile(np.array([[1.0, 0.0, 0.0]]), (origins.shape[0], 1))
+        bmin, bmax = mesh.bounds
+        a = np.linspace(bmin[o0], bmax[o0], n1, dtype=np.float64)
+        b = np.linspace(bmin[o1], bmax[o1], n2, dtype=np.float64)
+        AA, BB = np.meshgrid(a, b, indexing='xy')
 
-        # Fast intersector (uses Embree if available)
+        eps = 1e-6 * float((bmax - bmin).sum() + 1.0)
+        origins = np.zeros((AA.size, 3), dtype=np.float64)
+        origins[:, axis_idx] = bmin[axis_idx] - eps
+        origins[:, o0] = AA.ravel()
+        origins[:, o1] = BB.ravel()
+
+        direction = np.zeros(3); direction[axis_idx] = 1.0
+        directions = np.tile(direction[None, :], (origins.shape[0], 1))
+
         intersector = trimesh.ray.ray_pyembree.RayMeshIntersector(mesh) \
                     if trimesh.ray.has_embree \
                     else trimesh.ray.ray_triangle.RayMeshIntersector(mesh)
 
-        # Query any hit; returns hit locations per ray (ragged)
-        # For speed/memory, do in chunks
         covered = np.zeros(origins.shape[0], dtype=bool)
         CHUNK = 200_000
         for s in range(0, origins.shape[0], CHUNK):
-            o = origins[s:s+CHUNK]
-            d = directions[s:s+CHUNK]
-            hits = intersector.intersects_any(o, d)   # boolean per ray
-            covered[s:s+CHUNK] = hits
+            covered[s:s+CHUNK] = intersector.intersects_any(origins[s:s+CHUNK], directions[s:s+CHUNK])
 
-        # Pixel cell area in YZ
-        cell_area = ((ymax - ymin) / (nx - 1)) * ((zmax - zmin) / (ny - 1))
+        cell_area = ((bmax[o0] - bmin[o0]) / (n1 - 1)) * ((bmax[o1] - bmin[o1]) / (n2 - 1))
         return float(covered.sum() * cell_area)
 
-    # Convert drag force -> drag coefficient using the drag equation with per-mesh frontal area
-    def force_to_coefficient(self, drag_force_newtons: numpy.ndarray, frontal_area_m2: numpy.ndarray) -> numpy.ndarray:
-        V = float(self.data["stream_velocity"])  # m/s
-        q = 0.5 * self._RHO_AIR * (V ** 2)       # dynamic pressure [Pa = N/m^2]
-        # Guard against zeros
-        frontal_area_m2 = numpy.clip(numpy.asarray(frontal_area_m2, dtype=numpy.float64), 1e-9, None)
-        Cd = drag_force_newtons / (q * frontal_area_m2)
-        return Cd
+    @staticmethod
+    def frontal_area(mesh, nx=4096, ny=4096):
+        return ObjectiveEvaluator._silhouette_area(mesh, axis='x', n1=nx, n2=ny)
 
+    @staticmethod
+    def planform_area(mesh, nx=4096, ny=4096):
+        return ObjectiveEvaluator._silhouette_area(mesh, axis='z', n1=nx, n2=ny)
+
+    def force_to_coefficient(self, force_newtons, area_m2):
+        """Standard area-based coefficient: F / (0.5 rho V^2 A_ref)."""
+        V = float(self.data["stream_velocity"])  # m/s
+        q = 0.5 * self._RHO_AIR * (V ** 2)       # dynamic pressure [Pa]
+        return force_newtons / (q * area_m2)
+ 
     # return [objective_value] lower is better
     @retry(times=10, failed_return=None, exceptions=(HTTPError), backoff_factor=2)
     def evaluate_one(self, mesh, retry_attempt):
@@ -131,7 +131,6 @@ class ObjectiveEvaluator:
 
         with numpy.load(io.BytesIO(r.content)) as output_data:
             output_dict = {key: output_data[key] for key in output_data.keys()}
-        
         objective_value = torch.zeros(self.num_objectives)
         for i, objective in enumerate(self.objectives):
             if objective == "drag-coefficient":
@@ -139,15 +138,27 @@ class ObjectiveEvaluator:
                 frontal_area = self.frontal_area(mesh)
                 drag_coefficient = self.force_to_coefficient(drag_force, frontal_area)
                 objective_value[i] = drag_coefficient.item()
+            elif objective == "lift-coefficient":
+                lift_force = output_dict["lift_force"]
+                lift_coefficient_frontal = self.force_to_coefficient(lift_force, self.frontal_area(mesh))
+                lift_coefficient_planform = self.force_to_coefficient(lift_force, self.planform_area(mesh))
+                lift_coefficient = (lift_coefficient_frontal + lift_coefficient_planform) / 2
+                objective_value[i] = lift_coefficient.item()
+            elif objective == "lift-to-drag-ratio":
+                frontal_area = self.frontal_area(mesh)
+                planform_area = self.planform_area(mesh)
+                cl = self.force_to_coefficient(output_dict["lift_force"], planform_area).item()
+                cd = self.force_to_coefficient(output_dict["drag_force"], frontal_area).item()
+                objective_value[i] = cl / cd
             elif objective == "drag-force":
                 objective_value[i] = output_dict["drag_force"].item()
             elif objective == "lift-force":
                 objective_value[i] = output_dict["lift_force"].item()
             elif objective == "scaled-drag-force":
-                drag_force = output_dict["drag_force"].item() # range ~ [0, 200]
+                drag_force = output_dict["drag_force"].item()  # range ~ [0, 200]
                 objective_value[i] = (drag_force - 200) / 200  # normalize to [-1, 0]
             elif objective == "scaled-lift-force":
-                lift_force = output_dict["lift_force"].item() # range ~ [-100, 100]
+                lift_force = output_dict["lift_force"].item()  # range ~ [-100, 100]
                 objective_value[i] = (lift_force - 100) / 200  # normalize to [-1, 0]
             else:
                 raise ValueError(f"Unknown objective: {objective}")
