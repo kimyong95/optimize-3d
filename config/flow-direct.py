@@ -8,6 +8,5 @@ def get_config():
     config.run_name = "flow-direct"
     config.total_num_samples = 16
     config.max_batch_size_per_device = 16
-    config.noise_level = 0.7
 
     return config
