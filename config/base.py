@@ -6,8 +6,8 @@ def get_config():
     config.seed = 0
 
     config.prompt = "car"
-    config.num_inference_steps = 25
-    config.guidance_scale = 7.0
+    config.num_inference_steps = 50
+    config.guidance_scale = 3.0
     config.objectives = "drag-coefficient"
 
     config.reward_server_port = 8000

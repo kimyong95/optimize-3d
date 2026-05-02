@@ -120,6 +120,8 @@ class Trainer(BaseTrainer):
 
         finite = torch.isfinite(Y)
         Y_finite = Y[finite]
+        if Y_finite.numel() < 2:
+            return torch.zeros_like(xt)
         Y = (Y - Y_finite.mean()) / Y_finite.std().clamp(min=1e-3)
 
         d = torch.zeros(L, n, *self.latent_shape, device=xt.device, dtype=xt.dtype)
@@ -170,8 +172,13 @@ class Trainer(BaseTrainer):
         assert self.config.total_num_samples == len(gathered_objective_values)
         self.increment_data(gathered_x1, gathered_rewards.squeeze(-1))
 
-        self.log_objective_metrics(all_objective_values, objective_evaluations=self.config.total_num_samples * step)
-        self.log_meshes(all_meshes, all_slats, all_objective_values, objective_evaluations=self.config.total_num_samples * step)
+        finite_mask = torch.isfinite(all_objective_values).all(dim=-1)
+        finite_obj_values = all_objective_values[finite_mask]
+        finite_meshes = [m for m, ok in zip(all_meshes, finite_mask.tolist()) if ok]
+        finite_slats = [s for s, ok in zip(all_slats, finite_mask.tolist()) if ok]
+        if finite_obj_values.shape[0] > 0:
+            self.log_objective_metrics(finite_obj_values, objective_evaluations=self.config.total_num_samples * step)
+            self.log_meshes(finite_meshes, finite_slats, finite_obj_values, objective_evaluations=self.config.total_num_samples * step)
 
     def _get_model_prediction_extend(self, external_self, model, x_t, t, cond=None, **kwargs):
         

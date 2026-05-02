@@ -1,7 +1,7 @@
 # set -a; source .env; set +a
 # docker run --name domino -d --runtime=nvidia \
 #   --gpus \"device=0,1,2,3\" --shm-size 2g -p 8000:8000 -e NGC_API_KEY \
-#   -t nvcr.io/nim/nvidia/domino-automotive-aero:2.0.0
+#   -t nvcr.io/nim/nvidia/domino-automotive-aero:2.1.0-41313772
 
 import io, httpx, numpy
 import tempfile
@@ -116,12 +116,35 @@ class ObjectiveEvaluator:
         V = float(self.data["stream_velocity"])  # m/s
         q = 0.5 * self._RHO_AIR * (V ** 2)       # dynamic pressure [Pa]
         return force_newtons / (q * area_m2)
- 
+
+    def within_bounding_box(self, mesh):
+        """Check Domino-Automotive-Aero NIM placement & size limits.
+        https://docs.nvidia.com/nim/physicsnemo/domino-automotive-aero/latest/usability-guide.html
+        """
+        MAX_LENGTH = 6.3        # meters (X extent)
+        MAX_WIDTH  = 2.5        # meters (Y extent)
+        MAX_HEIGHT = 2.2        # meters (Z extent)
+        GROUND_Z   = -0.318469  # meters; wheels must touch this plane
+        GROUND_TOL = 0.05       # tolerance on z_min vs ground plane
+        SYM_TOL    = 0.05       # tolerance on y_center vs 0
+
+        bmin, bmax = mesh.bounds
+        dx, dy, dz = (bmax - bmin).tolist()
+
+        return (
+            dx <= MAX_LENGTH
+            and dy <= MAX_WIDTH
+            and dz <= MAX_HEIGHT
+            and abs(bmin[2] - GROUND_Z) <= GROUND_TOL
+            and abs(0.5 * (bmin[1] + bmax[1])) <= SYM_TOL
+        )
+
+
     # return [objective_value] lower is better
     @retry(times=10, failed_return=None, exceptions=(HTTPError), backoff_factor=2)
     def evaluate_one(self, mesh, retry_attempt):
 
-        if mesh.body_count != 1 or not mesh.is_watertight:
+        if not self.within_bounding_box(mesh):
             return torch.full((self.num_objectives,), float('inf'))
 
         with tempfile.NamedTemporaryFile(mode='wb+', delete=True, suffix='.stl') as f:
