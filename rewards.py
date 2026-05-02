@@ -121,6 +121,9 @@ class ObjectiveEvaluator:
     @retry(times=10, failed_return=None, exceptions=(HTTPError), backoff_factor=2)
     def evaluate_one(self, mesh, retry_attempt):
 
+        if mesh.body_count != 1 or not mesh.is_watertight:
+            return torch.full((self.num_objectives,), float('inf'))
+
         with tempfile.NamedTemporaryFile(mode='wb+', delete=True, suffix='.stl') as f:
             mesh.export(f.name)
             f.seek(0)

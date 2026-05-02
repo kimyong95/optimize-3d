@@ -118,12 +118,17 @@ class Trainer(BaseTrainer):
         if N == 0:
             return torch.zeros_like(xt)
 
-        Y = (Y - Y.mean(dim=0, keepdim=True)) / Y.std(dim=0, keepdim=True).clamp(min=1e-3)
+        finite = torch.isfinite(Y)
+        Y_finite = Y[finite]
+        Y = (Y - Y_finite.mean()) / Y_finite.std().clamp(min=1e-3)
 
         d = torch.zeros(L, n, *self.latent_shape, device=xt.device, dtype=xt.dtype)
         for l in range(L):
-            X1_l = X1[l*B:(l+1)*B]
-            Y_l = Y[l*B:(l+1)*B]
+            mask_l = finite[l*B:(l+1)*B]
+            X1_l = X1[l*B:(l+1)*B][mask_l]
+            Y_l = Y[l*B:(l+1)*B][mask_l]
+            if X1_l.shape[0] == 0:
+                continue
             for i in range(n):
                 d[l, i] = distribution_shift(X1_l, Y_l, xt[i], x1[i], t)
         d = d.sum(dim=0)

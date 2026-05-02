@@ -112,24 +112,32 @@ class Trainer(BaseTrainer):
         expansion_size = external_self.expansion_size_t[t_idx]
         x_prev_candidates = []
         x_prev_candidates_obj_values = []
-        
+        x_prev_candidates_meshes = []
+        x_prev_candidates_slats = []
+
         for i, x_prev_mean_i in enumerate(x_prev_mean):
             # sample
             noise_i = torch.randn( (expansion_size,) + x_prev_mean_i.shape, device=x_prev_mean_i.device)
             x_prev_i = x_prev_mean_i + std_dev_t * np.sqrt(-1*dt) * noise_i
             x_prev_candidates.append(x_prev_i)
-            
+
             # determinisitcally sample once, decode and evaluate
             objective_values = torch.full((expansion_size, external_self.objective_evaluator.num_objectives), float('inf'), device=x_t.device)
+            meshes_i = [None] * expansion_size
+            slats_i = [None] * expansion_size
             for j, x_prev_ij in enumerate(x_prev_i):
                 try:
                     pred_sample_ij = self.sample_once_original(model, x_prev_ij.unsqueeze(0), t_prev, t_seq[t_prev_prev_idx], cond_one, noise_level=0.0, **kwargs).pred_x_0 if t_prev_prev_idx < len(t_seq) else x_prev_ij.unsqueeze(0)
                     coords = torch.argwhere(external_self.pipeline.models['sparse_structure_decoder'](pred_sample_ij)>0)[:, [0, 2, 3, 4]].int()
                     meshes, slats = external_self.generate_meshes_from_coords(cond_dict_one, coords)
                     objective_values[j] = external_self.objective_evaluator(meshes).to(x_t.device)
+                    meshes_i[j] = meshes[0]
+                    slats_i[j] = slats[0]
                 except Exception as e:
                     print(f"Exception {e} when decoding at {t_idx}-th timestep, assign inf objective values")
             x_prev_candidates_obj_values.append(objective_values)
+            x_prev_candidates_meshes.append(meshes_i)
+            x_prev_candidates_slats.append(slats_i)
 
         # flatten
         x_prev_candidates = torch.stack(x_prev_candidates, dim=0)
@@ -139,6 +147,8 @@ class Trainer(BaseTrainer):
         best_indices = x_prev_candidates_obj_values.mean(dim=-1).argmin(dim=1)
         x_prev_candidates = x_prev_candidates[torch.arange(len(x_prev_candidates)), best_indices]
         x_prev_candidates_obj_values = x_prev_candidates_obj_values[torch.arange(len(x_prev_candidates_obj_values)), best_indices]
+        x_prev_candidates_meshes = [x_prev_candidates_meshes[i][b.item()] for i, b in enumerate(best_indices)]
+        x_prev_candidates_slats = [x_prev_candidates_slats[i][b.item()] for i, b in enumerate(best_indices)]
 
         # global selection
         next_batch_size = external_self.batch_size_t[t_prev_idx]
@@ -146,10 +156,14 @@ class Trainer(BaseTrainer):
         x_prev = x_prev_candidates[next_indices]
         x_prev_candidates_obj_values = x_prev_candidates_obj_values[next_indices]
         pred_x_0 = pred_x_0[next_indices]
+        selected_meshes = [x_prev_candidates_meshes[i] for i in next_indices.tolist()]
+        selected_slats = [x_prev_candidates_slats[i] for i in next_indices.tolist()]
 
         # log
         if torch.isfinite(x_prev_candidates_obj_values).all():
-            external_self.log_objective_metrics(x_prev_candidates_obj_values, objective_evaluations=external_self.objective_evaluations[t_idx])
+            obj_evals = int(external_self.objective_evaluations[t_idx])
+            external_self.log_objective_metrics(x_prev_candidates_obj_values, objective_evaluations=obj_evals)
+            external_self.log_meshes(selected_meshes, selected_slats, x_prev_candidates_obj_values, objective_evaluations=obj_evals)
 
         return edict({"pred_x_prev": x_prev, "pred_x_0": pred_x_0})
 

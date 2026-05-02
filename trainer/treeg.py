@@ -44,37 +44,21 @@ class Trainer(BaseTrainer):
 
     @torch.inference_mode()
     def run(self) -> None:
-        all_meshes = []
-        all_slats = []
+        sparse_structure_sampler_params = {
+            "steps": self.config.num_inference_steps,
+            "noise_level": 0.7,
+            "external_self": self,
+        }
 
-        all_log_trajectory_obj_values = []
-        for _ in range(self.config.total_num_samples):
-            self.log_trajectory_obj_values = torch.zeros((self.config.num_inference_steps, self.objective_evaluator.num_objectives), device=self.device)
-            sparse_structure_sampler_params = {
-                "steps": self.config.num_inference_steps,
-                "noise_level": 0.7,
-                "external_self": self,
-            }
+        cond = self.pipeline.get_cond([self.prompt]*self.config.batch_size)
+        coords = self.pipeline.sample_sparse_structure(cond, self.config.batch_size, sparse_structure_sampler_params)
 
-            cond = self.pipeline.get_cond([self.prompt]*self.config.batch_size)
-            coords = self.pipeline.sample_sparse_structure(cond, self.config.batch_size, sparse_structure_sampler_params)
-            
-            meshes, slats = self.generate_meshes_from_coords(cond, coords)
+        meshes, slats = self.generate_meshes_from_coords(cond, coords)
 
-            all_meshes.extend(meshes)
-            all_slats.extend(slats)
-            all_log_trajectory_obj_values.append(self.log_trajectory_obj_values)
-        
-        # log trajectory objective values
-        all_log_trajectory_obj_values = torch.stack(all_log_trajectory_obj_values) # (N, T, K)
-        for t in range(self.config.num_inference_steps):
-            objective_values_t = all_log_trajectory_obj_values[:, t, :]
-            if torch.isfinite(objective_values_t).all():
-                self.log_objective_metrics(objective_values_t, objective_evaluations=self.config.total_num_samples * self.config.expansion_size * (t+1))
-        
-        total_objective_evaluations = self.config.total_num_samples * self.config.expansion_size * self.config.num_inference_steps
-        self.log_objective_metrics(all_log_trajectory_obj_values[:, -1, :], objective_evaluations=total_objective_evaluations, stage="final")
-        self.log_meshes(all_meshes,all_slats,all_log_trajectory_obj_values[:, -1, :], objective_evaluations=total_objective_evaluations, stage="final")
+        total_objective_evaluations = self.config.batch_size * self.config.expansion_size * self.config.num_inference_steps
+        objective_values = self.objective_evaluator(meshes).to(self.device)
+        self.log_objective_metrics(objective_values, objective_evaluations=total_objective_evaluations, stage="final")
+        self.log_meshes(meshes, slats, objective_values, objective_evaluations=total_objective_evaluations, stage="final")
 
     @staticmethod
     def sample_once_treeg(
@@ -114,23 +98,31 @@ class Trainer(BaseTrainer):
         # ------------ treeg code ------------- #
         x_prev_candidates = []
         x_prev_candidates_obj_values = []
+        x_prev_candidates_meshes = []
+        x_prev_candidates_slats = []
         for i, x_prev_mean_i in enumerate(x_prev_mean):
             # sample
             noise_i = torch.randn( (external_self.config.expansion_size,) + x_prev_mean_i.shape, device=x_prev_mean_i.device)
             x_prev_i = x_prev_mean_i + std_dev_t * np.sqrt(-1*dt) * noise_i
             x_prev_candidates.append(x_prev_i)
-            
+
             # determinisitcally sample once, decode and evaluate
             objective_values = torch.full((external_self.config.expansion_size, external_self.objective_evaluator.num_objectives), float('inf'), device=x_t.device)
+            meshes_i = [None] * external_self.config.expansion_size
+            slats_i = [None] * external_self.config.expansion_size
             for j, x_prev_ij in enumerate(x_prev_i):
                 try:
                     pred_sample_ij = self.sample_once_original(model, x_prev_ij.unsqueeze(0), t_prev, t_seq[t_prev_prev_idx], cond_one, noise_level=0.0, **kwargs).pred_x_0 if t_prev_prev_idx < len(t_seq) else x_prev_ij.unsqueeze(0)
                     coords = torch.argwhere(external_self.pipeline.models['sparse_structure_decoder'](pred_sample_ij)>0)[:, [0, 2, 3, 4]].int()
                     meshes, slats = external_self.generate_meshes_from_coords(cond_dict_one, coords)
                     objective_values[j] = external_self.objective_evaluator(meshes).to(x_t.device)
+                    meshes_i[j] = meshes[0]
+                    slats_i[j] = slats[0]
                 except Exception as e:
                     print(f"Exception {e} when decoding at {t_idx}-th timestep, assign inf objective values")
             x_prev_candidates_obj_values.append(objective_values)
+            x_prev_candidates_meshes.extend(meshes_i)
+            x_prev_candidates_slats.extend(slats_i)
 
         # flatten
         x_prev_candidates = torch.cat(x_prev_candidates, dim=0)
@@ -139,9 +131,16 @@ class Trainer(BaseTrainer):
         # global selection
         next_indices = x_prev_candidates_obj_values.mean(dim=-1).topk(batch_size, largest=False).indices
         x_prev_candidates_obj_values = x_prev_candidates_obj_values[next_indices]
-        external_self.log_trajectory_obj_values[t_idx] = x_prev_candidates_obj_values.mean(dim=0)
         x_prev = x_prev_candidates[next_indices]
-        
+        selected_meshes = [x_prev_candidates_meshes[i] for i in next_indices.tolist()]
+        selected_slats = [x_prev_candidates_slats[i] for i in next_indices.tolist()]
+
+        # log
+        if torch.isfinite(x_prev_candidates_obj_values).all():
+            obj_evals = external_self.config.batch_size * external_self.config.expansion_size * (t_idx + 1)
+            external_self.log_objective_metrics(x_prev_candidates_obj_values, objective_evaluations=obj_evals)
+            external_self.log_meshes(selected_meshes, selected_slats, x_prev_candidates_obj_values, objective_evaluations=obj_evals)
+
         return edict({"pred_x_prev": x_prev, "pred_x_0": pred_x_0})
 
 
