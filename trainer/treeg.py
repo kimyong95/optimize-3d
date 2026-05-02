@@ -46,7 +46,8 @@ class Trainer(BaseTrainer):
     def run(self) -> None:
         sparse_structure_sampler_params = {
             "steps": self.config.num_inference_steps,
-            "noise_level": 0.7,
+            "noise_level": self.config.noise_level,
+            "cfg_strength": self.config.guidance_scale,
             "external_self": self,
         }
 
