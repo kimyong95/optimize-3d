@@ -91,17 +91,13 @@ class Trainer(BaseTrainer):
                 print(f"Exception at step {t_idx}, candidate {j}: {e}")
 
         rewards = -objective_values.mean(dim=-1)
-        valid_mask = torch.isfinite(rewards)
 
-        if not valid_mask.any():
+        if not torch.isfinite(rewards).all():
             x_prev = x_prev_mean + ct * et[:1]
         else:
-            external_self.log_trajectory_obj_values[t_idx] = objective_values[valid_mask].mean(dim=0)
-            valid_rewards = rewards[valid_mask]
-            valid_et = et[valid_mask]
-            n_valid = valid_mask.sum().item()
-            r = (valid_rewards - valid_rewards.mean()) / valid_rewards.std().clamp(min=1e-6)
-            zt = torch.einsum("N, N ... -> ...", r.to(valid_et.dtype), valid_et) / n_valid ** 0.5
+            external_self.log_trajectory_obj_values[t_idx] = objective_values.mean(dim=0)
+            r = (rewards - rewards.mean()) / rewards.std().clamp(min=1e-6)
+            zt = torch.einsum("N, N ... -> ...", r.to(et.dtype), et) / n ** 0.5
             x_prev = x_prev_mean + ct * zt.unsqueeze(0)
 
         if torch.isfinite(external_self.log_trajectory_obj_values[t_idx]).all():

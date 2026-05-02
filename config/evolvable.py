@@ -3,7 +3,7 @@ from config.base import get_config as get_base_config
 def get_config():
     config = get_base_config()
 
-    config.run_name = "evolvable-3d"
+    config.run_name = "evolvable"
 
     # total objective evaluations: total_num_samples * perturbation_samples * num_inference_steps
     # e.g. 32 * 50 = 1600

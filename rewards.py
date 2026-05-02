@@ -117,34 +117,13 @@ class ObjectiveEvaluator:
         q = 0.5 * self._RHO_AIR * (V ** 2)       # dynamic pressure [Pa]
         return force_newtons / (q * area_m2)
 
-    def within_bounding_box(self, mesh):
-        """Check Domino-Automotive-Aero NIM placement & size limits.
-        https://docs.nvidia.com/nim/physicsnemo/domino-automotive-aero/latest/usability-guide.html
-        """
-        MAX_LENGTH = 6.3        # meters (X extent)
-        MAX_WIDTH  = 2.5        # meters (Y extent)
-        MAX_HEIGHT = 2.2        # meters (Z extent)
-        GROUND_Z   = -0.318469  # meters; wheels must touch this plane
-        GROUND_TOL = 0.05       # tolerance on z_min vs ground plane
-        SYM_TOL    = 0.05       # tolerance on y_center vs 0
-
-        bmin, bmax = mesh.bounds
-        dx, dy, dz = (bmax - bmin).tolist()
-
-        return (
-            dx <= MAX_LENGTH
-            and dy <= MAX_WIDTH
-            and dz <= MAX_HEIGHT
-            and abs(bmin[2] - GROUND_Z) <= GROUND_TOL
-            and abs(0.5 * (bmin[1] + bmax[1])) <= SYM_TOL
-        )
 
 
     # return [objective_value] lower is better
     @retry(times=10, failed_return=None, exceptions=(HTTPError), backoff_factor=2)
     def evaluate_one(self, mesh, retry_attempt):
 
-        if not self.within_bounding_box(mesh):
+        if not mesh.is_volume or mesh.volume < 0.5:
             return torch.full((self.num_objectives,), float('inf'))
 
         with tempfile.NamedTemporaryFile(mode='wb+', delete=True, suffix='.stl') as f:
