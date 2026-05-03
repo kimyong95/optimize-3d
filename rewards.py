@@ -118,13 +118,11 @@ class ObjectiveEvaluator:
         q = 0.5 * self._RHO_AIR * (V ** 2)       # dynamic pressure [Pa]
         return force_newtons / (q * area_m2)
 
-
-
     # return [objective_value] lower is better
     @retry(times=10, failed_return=lambda self, mesh: torch.full((self.num_objectives,), float('inf')), exceptions=(HTTPError), backoff_factor=2)
     def evaluate_one(self, mesh, retry_attempt):
 
-        if mesh is None or not mesh.is_volume or mesh.volume < 0.5:
+        if mesh is None:
             return torch.full((self.num_objectives,), float('inf'))
 
         with tempfile.NamedTemporaryFile(mode='wb+', delete=True, suffix='.stl') as f:
