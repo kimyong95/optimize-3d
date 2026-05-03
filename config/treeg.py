@@ -5,8 +5,9 @@ def get_config():
 
     config.run_name = "treeg"
     
-    # total objective evaluations: 50*8*4=1600
-    config.batch_size = 4 # active set size A in the paper
-    config.expansion_size = 8 # branch out sample size K in the paper
+    # total objective evaluations: 50*16*2=1600
+    config.total_num_samples = 16
+    config.batch_size = 1 # active set size A in the paper
+    config.expansion_size = 2 # branch out sample size K in the paper
 
     return config

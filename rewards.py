@@ -31,7 +31,8 @@ def retry(times, failed_return, exceptions, backoff_factor=1):
                     )
                     time.sleep(backoff_factor * 2**attempt)
                     attempt += 1
-            return failed_return
+            return_value = failed_return(*args, **kwargs) if isinstance(failed_return, callable) else failed_return
+            return return_value
         return wrapper
     return decorator
 
@@ -120,10 +121,10 @@ class ObjectiveEvaluator:
 
 
     # return [objective_value] lower is better
-    @retry(times=10, failed_return=None, exceptions=(HTTPError), backoff_factor=2)
+    @retry(times=10, failed_return=lambda self, mesh: torch.full((self.num_objectives,), float('inf')), exceptions=(HTTPError), backoff_factor=2)
     def evaluate_one(self, mesh, retry_attempt):
 
-        if not mesh.is_volume or mesh.volume < 0.5:
+        if mesh is None or not mesh.is_volume or mesh.volume < 0.5:
             return torch.full((self.num_objectives,), float('inf'))
 
         with tempfile.NamedTemporaryFile(mode='wb+', delete=True, suffix='.stl') as f:
