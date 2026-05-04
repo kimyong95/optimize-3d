@@ -42,10 +42,10 @@ class Trainer(BaseTrainer):
         self.pipeline.sparse_structure_sampler.sample_once = self.sample_once_dsearch.__get__(self.pipeline.sparse_structure_sampler)
 
         # b_t in the paper
-        self.batch_size_t = [ int( config.init_batch_size * (config.final_batch_size/config.init_batch_size)**(t/config.num_inference_steps) ) for t in range(config.num_inference_steps) ]
+        self.batch_size_t = [round(config.init_batch_size * (config.final_batch_size/config.init_batch_size)**(t/config.num_inference_steps)) for t in range(config.num_inference_steps)]
 
         # w_t in the paper
-        self.expansion_size_t = [ int(config.evaluation_budget // b_t) for b_t in self.batch_size_t ]
+        self.expansion_size_t = [round(config.evaluation_budget / b_t) for b_t in self.batch_size_t]
 
         objective_evaluations = [b*e for b,e in zip(self.batch_size_t, self.expansion_size_t)]
         self.objective_evaluations = torch.tensor(objective_evaluations).cumsum(dim=0)
